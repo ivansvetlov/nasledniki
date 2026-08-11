@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>НаСЛЕДНИКИ — Стань Наследником</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Oswald:wght@500;600;700&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet">
+<style>
+/* ═══════════ ЭКСПЕДИЦИОННЫЙ ЖУРНАЛ · дизайн-токены ═══════════ */
+:root{
+  --paper:#F2E8D5;        /* старый пергамент */
+  --paper-2:#E9DCC2;
+  --ink:#2B2317;          /* чернила */
+  --ink-soft:#5A4B33;
+  --terra:#B4552D;        /* терра-кота */
+  --terra-2:#93401F;
+  --sage:#6B7A4E;         /* хаки/олива */
+  --sage-soft:#DDE3C8;
+  --gold:#C08A3E;         /* латунь/штамп */
+  --gold-soft:#F0DFB8;
+  --night:#2E3B2C;        /* тёмно-зелёный ночной */
+  --line:#C9B98F;
+  --font-head:'Oswald',sans-serif;
+  --font-body:'Source Serif 4',serif;
+  --font-mono:'JetBrains Mono',monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+body{font-family:var(--font-body);background:var(--paper);color:var(--ink);line-height:1.55;overflow-x:hidden}
+
+/* ═══════════ фон: закат над Волгой ═══════════ */
+.bg{position:fixed;inset:0;z-index:-2;overflow:hidden;
+  background:linear-gradient(180deg,#8B5E34 0%,#A96A3A 28%,#C0804A 48%,#E8B57E 62%,#F2E0BC 78%,var(--paper) 100%);}
+.bg::before{content:'';position:absolute;inset:0;
+  background:radial-gradient(1200px 500px at 70% 30%,rgba(255,214,150,.45),transparent 60%),radial-gradient(800px 400px at 20% 20%,rgba(212,148,84,.35),transparent 60%);}
+.sun{position:absolute;top:20%;right:16%;width:150px;height:150px;border-radius:50%;
+  background:radial-gradient(circle at 40% 40%,#FFE9B8,#F5C077 70%,#D98E4A);opacity:.9;
+  box-shadow:0 0 80px 40px rgba(245,192,119,.35);animation:sunPulse 9s ease-in-out infinite}
+@keyframes sunPulse{0%,100%{transform:scale(1)}50%{transform:scale(1.05)}}
+
+/* горы Жигули силуэтом */
+.mountains{position:absolute;bottom:0;left:0;right:0;height:42%;z-index:0;pointer-events:none}
+.mountains svg{position:absolute;bottom:0;left:0;width:100%;height:100%}
+.hills{position:absolute;bottom:0;left:0;right:0;height:38%;
+  background:radial-gradient(1200px 400px at 50% 120%,rgba(90,80,50,.28),transparent 70%);}
+
+/* ═══════════ КОНТЕНТ ═══════════ */
+.hero{position:relative;min-height:100vh;display:flex;flex-direction:column;justify-content:center;padding:40px 6vw 60px;z-index:2}
+.wrap{max-width:1200px;margin:0 auto;width:100%}
+
+/* верхняя полоса-журнал */
+.topo{display:flex;align-items:center;justify-content:space-between;gap:16px;padding-bottom:22px;border-bottom:2px solid rgba(43,35,23,.5);margin-bottom:34px;flex-wrap:wrap}
+.topo .brand{display:flex;align-items:center;gap:12px}
+.topo .brand .badge{width:44px;height:44px;border-radius:10px;background:var(--night);display:grid;place-items:center;color:#F2E8D5;font-family:var(--font-head);font-weight:700;font-size:1.1rem;letter-spacing:.02em;box-shadow:0 4px 14px rgba(43,35,23,.3)}
+.topo .brand .name{font-family:var(--font-head);font-weight:700;font-size:1.15rem;letter-spacing:.04em;text-transform:uppercase}
+.topo .brand .name small{display:block;font-family:var(--font-mono);font-size:.6rem;letter-spacing:.18em;color:var(--ink-soft);font-weight:500}
+.topo .meta{font-family:var(--font-mono);font-size:.68rem;letter-spacing:.12em;text-transform:uppercase;color:var(--ink-soft);display:flex;gap:18px;flex-wrap:wrap}
+.topo .meta b{color:var(--terra-2)}
+
+/* ═══════════ ЗАГОЛОВОК ═══════════ */
+.kicker{font-family:var(--font-mono);font-size:.74rem;letter-spacing:.24em;text-transform:uppercase;color:var(--terra-2);margin-bottom:16px;display:flex;align-items:center;gap:12px}
+.kicker::before{content:'';width:44px;height:2px;background:var(--terra)}
+.title{font-family:var(--font-head);font-weight:700;font-size:clamp(2.6rem,7.5vw,5.6rem);line-height:1.02;letter-spacing:.01em;text-transform:uppercase;margin-bottom:20px;color:var(--ink)}
+.title .accent{color:var(--terra-2);position:relative}
+.title .accent::after{content:'';position:absolute;left:0;right:0;bottom:6px;height:8px;background:rgba(192,138,62,.4);z-index:-1;transform:rotate(-1deg)}
+.sub{font-size:clamp(1.05rem,2.2vw,1.35rem);max-width:560px;color:var(--ink-soft);margin-bottom:30px}
+.sub em{color:var(--terra-2);font-style:normal;font-weight:600}
+
+/* текст появления волной */
+.wave .w{display:inline-block;overflow:hidden;vertical-align:bottom}
+.wave .ch{display:inline-block;transform:translateY(110%) rotate(4deg);opacity:0;transition:transform .6s cubic-bezier(.22,1,.36,1),opacity .5s}
+.wave.run .ch{transform:none;opacity:1}
+
+/* ═══════════ КНОПКА ═══════════ */
+.cta{display:flex;gap:16px;flex-wrap:wrap;align-items:center}
+.btn-exp{position:relative;overflow:hidden;display:inline-flex;align-items:center;gap:10px;padding:16px 30px;border:none;border-radius:8px;
+  background:var(--terra);color:#FFF4E2;font-family:var(--font-head);font-weight:600;font-size:1rem;letter-spacing:.06em;text-transform:uppercase;cursor:pointer;
+  transition:transform .18s cubic-bezier(.22,1,.36,1),box-shadow .18s}
+.btn-exp:hover{transform:translateY(-2px);box-shadow:0 12px 28px rgba(147,64,31,.35)}
+.btn-exp:active{transform:translateY(0) scale(.97)}
+.btn-exp .shine{position:absolute;top:0;left:-80%;width:50%;height:100%;background:linear-gradient(100deg,transparent,rgba(255,255,255,.45),transparent);transform:skewX(-20deg);animation:shinesweep 2.8s linear infinite}
+@keyframes shinesweep{0%{left:-80%}55%{left:130%}100%{left:130%}}
+.btn-ghost{display:inline-flex;align-items:center;gap:8px;padding:16px 26px;border:2px solid rgba(43,35,23,.4);border-radius:8px;background:transparent;color:var(--ink);font-family:var(--font-head);font-weight:600;font-size:.95rem;letter-spacing:.05em;text-transform:uppercase;cursor:pointer;transition:background .18s,border-color .18s}
+.btn-ghost:hover{background:rgba(255,244,226,.4);border-color:var(--terra)}
+
+/* ═══════════ КАРТА ═══════════ */
+.map-wrap{position:relative;margin-top:44px;border:2px solid rgba(43,35,23,.45);border-radius:14px;overflow:hidden;background:rgba(249,242,224,.7);backdrop-filter:blur(3px);box-shadow:0 18px 44px rgba(43,35,23,.18)}
+.map-head{display:flex;align-items:center;justify-content:space-between;padding:12px 18px;border-bottom:1px dashed var(--line);font-family:var(--font-mono);font-size:.66rem;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-soft);flex-wrap:wrap;gap:8px}
+.map-head .legend{display:flex;gap:14px;flex-wrap:wrap}
+.map-head .legend span{display:flex;align-items:center;gap:6px}
+.map-head .legend i{width:10px;height:10px;border-radius:50%;display:inline-block}
+.map-svg{position:relative;width:100%;height:auto;display:block;padding:14px 10px 6px}
+.map-svg svg{width:100%;height:auto;display:block}
+
+/* маркеры городов */
+.city{transition:transform .2s cubic-bezier(.34,1.56,.64,1)}
+.city:hover{transform:scale(1.25)}
+.pin-ring{transform-origin:center;animation:ping 2.4s ease-out infinite}
+@keyframes ping{0%{transform:scale(.4);opacity:.9}80%{transform:scale(2.4);opacity:0}100%{opacity:0}}
+.pin{animation:bob 3.2s ease-in-out infinite}
+@keyframes bob{0%,100%{transform:translateY(0)}50%{transform:translateY(-4px)}}
+.city-name{font-family:var(--font-head);font-weight:600;font-size:12px;letter-spacing:.04em;text-transform:uppercase;fill:var(--ink)}
+.city-dot{fill:var(--terra);stroke:#FFF4E2;stroke-width:2}
+.route{stroke:var(--gold);stroke-width:2;fill:none;stroke-dasharray:6 7;opacity:.75}
+.route-anim{stroke-dashoffset:20;animation:routeDash 6s linear infinite}
+@keyframes routeDash{to{stroke-dashoffset:-26}}
+.route-dot{fill:var(--gold)}
+
+/* компас */
+.compass{position:absolute;top:14px;right:16px;width:52px;height:52px;border-radius:50%;background:var(--paper-2);border:2px solid var(--line);display:grid;place-items:center;box-shadow:0 4px 12px rgba(43,35,23,.2)}
+.compass svg{width:32px;height:32px;animation:compassSpin 14s linear infinite}
+@keyframes compassSpin{0%{transform:rotate(0)}40%{transform:rotate(25deg)}55%{transform:rotate(-8deg)}70%{transform:rotate(14deg)}100%{transform:rotate(360deg)}}
+
+/* штамп */
+.stamp{position:absolute;bottom:14px;right:18px;border:2px solid var(--terra-2);color:var(--terra-2);border-radius:8px;padding:5px 14px;font-family:var(--font-head);font-weight:600;font-size:.8rem;letter-spacing:.16em;text-transform:uppercase;transform:rotate(-8deg);opacity:.85}
+.stamp::after{content:'ГЛ. КООРДИНАТОР';display:block;font-family:var(--font-mono);font-size:.5rem;letter-spacing:.2em;text-align:center;margin-top:2px;opacity:.7}
+
+/* координаты */
+.coords{position:absolute;bottom:14px;left:18px;font-family:var(--font-mono);font-size:.6rem;letter-spacing:.1em;color:var(--ink-soft);opacity:.8}
+
+/* ═══════════ бегущая строка-«поезд» ═══════════ */
+.marquee{position:relative;margin-top:36px;overflow:hidden;border-top:2px solid var(--night);border-bottom:2px solid var(--night);background:var(--night);padding:12px 0;
+  -webkit-mask-image:linear-gradient(90deg,transparent,#000 8%,#000 92%,transparent);mask-image:linear-gradient(90deg,transparent,#000 8%,#000 92%,transparent)}
+.mq-track{display:flex;gap:44px;width:max-content;animation:mq 26s linear infinite}
+.marquee:hover .mq-track{animation-play-state:paused}
+@keyframes mq{to{transform:translateX(-50%)}}
+.mq-item{display:flex;align-items:center;gap:12px;color:#F2E8D5;font-family:var(--font-head);font-weight:600;font-size:1.05rem;letter-spacing:.05em;text-transform:uppercase;white-space:nowrap}
+.mq-item .star{color:var(--gold);font-family:var(--font-mono)}
+.mq-item small{font-family:var(--font-mono);font-size:.62rem;letter-spacing:.16em;color:#B7A87E;text-transform:none}
+
+/* партиклы-пыль */
+.ember{position:absolute;bottom:-10px;width:6px;height:6px;border-radius:50%;background:rgba(192,138,62,.7);opacity:0;animation:rise linear infinite;pointer-events:none}
+@keyframes rise{0%{transform:translateY(0) rotate(0);opacity:0}10%{opacity:.8}90%{opacity:.6}100%{transform:translateY(-90vh) rotate(180deg);opacity:0}}
+
+footer.hero-foot{position:relative;margin-top:26px;text-align:center;font-family:var(--font-mono);font-size:.62rem;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-soft);z-index:2}
+
+@media(max-width:760px){
+  .topo .meta{display:none}
+  .map-svg{padding:8px 4px 2px}
+  .city-name{font-size:9px}
+}
+</style>
+</head>
+<body>
+<div class="bg"><div class="sun"></div><div class="hills"></div><div class="mountains">
+  <svg viewBox="0 0 1440 320" preserveAspectRatio="none">
+    <path d="M0,220 L120,160 L220,190 L330,110 L430,180 L540,90 L650,170 L760,130 L870,180 L980,100 L1100,170 L1210,150 L1320,200 L1440,140 L1440,320 L0,320 Z" fill="rgba(74,66,44,.55)"/>
+    <path d="M0,260 L160,200 L280,230 L400,160 L520,230 L640,180 L780,240 L900,200 L1050,250 L1200,210 L1320,250 L1440,220 L1440,320 L0,320 Z" fill="rgba(58,52,36,.5)"/>
+  </svg>
+</div></div>
+
+<main class="hero">
+  <div class="wrap">
+    <div class="topo">
+      <div class="brand">
+        <div class="badge">НЛ</div>
+        <div class="name">НаСЛЕДНИКИ<small>экспедиции · самарская область</small></div>
+      </div>
+      <div class="meta">
+        <span>сезон <b>2026</b></span>
+        <span>возраст <b>10–17 лет</b></span>
+        <span>4 маршрута</span>
+        <span>места ограничены</span>
+      </div>
+    </div>
+
+    <div class="kicker">Познавательные экспедиции · открытие края</div>
+    <h1 class="title wave" id="title">
+      <span class="w"><span class="ch">Стань</span></span> <span class="w"><span class="ch">Наследником</span></span>
+    </h1>
+    <p class="sub wave" id="sub">Открой <em>Самарский край</em> через настоящее приключение: роли, задания, истории и собственный журнал путешественника.</p>
+
+    <div class="cta">
+      <button class="btn-exp" onclick="scrollToMap()"><span class="shine"></span>Выбрать экспедицию</button>
+      <button class="btn-ghost" onclick="scrollToMap()">Как это работает</button>
+    </div>
+
+    <div class="map-wrap">
+      <div class="map-head">
+        <span>Карта экспедиций 2026</span>
+        <div class="legend">
+          <span><i style="background:var(--terra)"></i>город · старт</span>
+          <span><i style="background:var(--gold)"></i>маршрут</span>
+          <span><i style="background:var(--sage)"></i>открыто</span>
+        </div>
+      </div>
+      <div class="map-svg" id="mapBox">
+        <!-- стилизованная карта Самарской области: Волга + 4 города -->
+        <svg viewBox="0 0 900 460" id="samaraMap">
+          <!-- Волга -->
+          <path d="M-20,30 C120,70 200,160 300,220 C400,280 420,330 520,370 C600,400 760,420 920,400" fill="none" stroke="rgba(107,122,78,.45)" stroke-width="46" stroke-linecap="round"/>
+          <path d="M-20,30 C120,70 200,160 300,220 C400,280 420,330 520,370 C600,400 760,420 920,400" fill="none" stroke="#8FB08A" stroke-width="38" stroke-linecap="round" opacity=".8"/>
+          <path d="M-20,30 C120,70 200,160 300,220 C400,280 420,330 520,370 C600,400 760,420 920,400" fill="none" stroke="#CFE3C2" stroke-width="14" stroke-linecap="round" opacity=".6"/>
+
+          <!-- маршруты (линии между городами) -->
+          <path class="route route-anim" d="M130,300 L280,240 L470,210"/>
+          <path class="route route-anim" style="animation-delay:-2s" d="M470,210 L640,260"/>
+          <path class="route route-anim" style="animation-delay:-4s" d="M130,300 L760,330"/>
+          <circle class="route-dot" cx="130" cy="300" r="4"/>
+          <circle class="route-dot" cx="280" cy="240" r="4"/>
+          <circle class="route-dot" cx="470" cy="210" r="4"/>
+          <circle class="route-dot" cx="640" cy="260" r="4"/>
+
+          <!-- Сызрань -->
+          <g class="city" data-city="syzran">
+            <circle class="pin-ring" cx="130" cy="300" r="16"/>
+            <g class="pin">
+              <path d="M130,284 l-10,10 a10,10 0 1,0 20,0 z" class="city-dot"/>
+            </g>
+            <text class="city-name" x="118" y="330">Сызрань</text>
+            <text class="city-name" x="118" y="344" style="font-size:8px;fill:var(--ink-soft);letter-spacing:.06em">Кремль · купеческий город</text>
+          </g>
+
+          <!-- Тольятти -->
+          <g class="city" data-city="tolyatti">
+            <circle class="pin-ring" cx="280" cy="240" r="16" style="animation-delay:.6s"/>
+            <g class="pin">
+              <path d="M280,224 l-10,10 a10,10 0 1,0 20,0 z" class="city-dot" style="fill:var(--sage)"/>
+            </g>
+            <text class="city-name" x="268" y="200">Тольятти</text>
+            <text class="city-name" x="268" y="214" style="font-size:8px;fill:var(--ink-soft)">Подводная лодка · техника</text>
+          </g>
+
+          <!-- Жигулевск -->
+          <g class="city" data-city="zhigulevsk">
+            <circle class="pin-ring" cx="470" cy="210" r="16" style="animation-delay:1.2s"/>
+            <g class="pin">
+              <path d="M470,194 l-10,10 a10,10 0 1,0 20,0 z" class="city-dot" style="fill:var(--gold)"/>
+            </g>
+            <text class="city-name" x="458" y="184">Жигулевск</text>
+            <text class="city-name" x="458" y="198" style="font-size:8px;fill:var(--ink-soft)">Горы · штольни · Волга</text>
+          </g>
+
+          <!-- Самара -->
+          <g class="city" data-city="samara">
+            <circle class="pin-ring" cx="640" cy="260" r="18" style="animation-delay:.3s"/>
+            <g class="pin">
+              <path d="M640,242 l-11,11 a11,11 0 1,0 22,0 z" class="city-dot" style="fill:var(--terra-2)"/>
+            </g>
+            <text class="city-name" x="628" y="238">Самара</text>
+            <text class="city-name" x="628" y="252" style="font-size:8px;fill:var(--ink-soft)">Театр · музеи · история</text>
+          </g>
+
+          <!-- контур области (декор) -->
+          <path d="M40,60 C150,30 280,50 400,80 C540,110 700,90 830,60 C860,150 870,250 830,340 C700,360 560,380 440,380 C260,380 90,340 40,240 Z" fill="none" stroke="rgba(180,85,45,.25)" stroke-width="2" stroke-dasharray="4 6"/>
+        </svg>
+      </div>
+      <div class="compass">
+        <svg viewBox="0 0 32 32" fill="none" stroke="var(--ink)" stroke-width="1.6">
+          <circle cx="16" cy="16" r="13"/>
+          <path d="M16,3 L19,16 L16,29 L13,16 Z" fill="var(--terra)"/>
+          <path d="M16,3 L19,16 L16,16 Z" fill="#FFF4E2"/>
+          <text x="16" y="7" text-anchor="middle" style="font-size:5px;font-family:monospace;fill:var(--ink)">N</text>
+        </svg>
+      </div>
+      <div class="stamp">Приключение</div>
+      <div class="coords">53.1957° N · 50.1002° E</div>
+    </div>
+
+    <div class="marquee">
+      <div class="mq-track" id="mq">
+        <span class="mq-item">Сызрань <span class="star">✦</span> <small>купеческий город</small></span>
+        <span class="mq-item">Тольятти <span class="star">✦</span> <small>технологии</small></span>
+        <span class="mq-item">Жигулевск <span class="star">✦</span> <small>горы и штольни</small></span>
+        <span class="mq-item">Самара <span class="star">✦</span> <small>театр и музеи</small></span>
+      </div>
+    </div>
+  </div>
+  <footer class="hero-foot">Открой Самарский край — стань частью истории</footer>
+</main>
+
+<script>
+(function(){
+  /* ── текст волной ── */
+  function waveRun(el){
+    el.classList.remove('run');
+    void el.offsetWidth;
+    el.querySelectorAll('.ch').forEach(function(c,i){c.style.transitionDelay=(i*70)+'ms';});
+    el.classList.add('run');
+  }
+  waveRun(document.getElementById('title'));
+  setTimeout(function(){waveRun(document.getElementById('sub'));},250);
+
+  /* ── marquee: дублируем для бесшовности ── */
+  var mq=document.getElementById('mq');
+  mq.innerHTML = mq.innerHTML + mq.innerHTML;
+
+  /* ── пыль-искры ── */
+  var hero=document.querySelector('.hero');
+  for(var i=0;i<14;i++){
+    var e=document.createElement('div');
+    e.className='ember';
+    e.style.left=(Math.random()*100)+'vw';
+    e.style.animationDuration=(9+Math.random()*10)+'s';
+    e.style.animationDelay=(Math.random()*12)+'s';
+    e.style.width=(3+Math.random()*5)+'px';
+    e.style.height=e.style.width;
+    hero.appendChild(e);
+  }
+
+  /* ── клики по городам (заглушка → детали позже) ── */
+  window.scrollToMap=function(){
+    var map=document.querySelector('.map-wrap');
+    map.scrollIntoView({behavior:'smooth',block:'center'});
+    map.animate([{transform:'scale(1)'},{transform:'scale(1.015)'},{transform:'scale(1)'}],{duration:400});
+  };
+  document.querySelectorAll('.city').forEach(function(c){
+    c.style.cursor='pointer';
+    c.addEventListener('click',function(){
+      var n=c.getAttribute('data-city');
+      var names={syzran:'Сызрань · «Секреты купеческого города»',tolyatti:'Тольятти · «Техника будущего»',zhigulevsk:'Жигулевск · «Горы и штольни»',samara:'Самара · «Театр и музеи»'};
+      alert('Экспедиция: '+(names[n]||n)+'\n(раздел «Экспедиции» — в разработке)');
+    });
+  });
+
+  /* ── параллакс карты за курсором ── */
+  var mapSvg=document.getElementById('samaraMap');
+  var wrap=document.getElementById('mapBox');
+  wrap.addEventListener('mousemove',function(e){
+    var r=wrap.getBoundingClientRect();
+    var cx=(e.clientX-r.left)/r.width-.5, cy=(e.clientY-r.top)/r.height-.5;
+    mapSvg.style.transform='translate('+(-cx*6)+'px,'+(-cy*4)+'px)';
+  });
+  wrap.addEventListener('mouseleave',function(){mapSvg.style.transform='';});
+})();
+</script>
+</body>
+</html>
