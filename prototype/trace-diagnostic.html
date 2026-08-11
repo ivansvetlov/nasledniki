@@ -30,7 +30,9 @@
     <div class="panel"><h2>Шаг 1: территория (тёмнее 250)</h2><img src="diag-territory.png"><div style="font-size:.74rem;color:#8E8E93;margin-top:6px">белое = единый контур карты (должна быть вся территория)</div></div>
     <div class="panel"><h2>Шаг 2: заливки областей (180–250)</h2><img src="diag-fill.png"><div style="font-size:.74rem;color:#8E8E93;margin-top:6px">белое = оттенки-заливки областей</div></div>
     <div class="panel"><h2>Шаг 3: тёмные линии (границы &lt;200)</h2><img src="diag-lines.png"><div style="font-size:.74rem;color:#8E8E93;margin-top:6px">белое = границы областей + подписи</div></div>
-    <div class="panel"><h2>Шаг 3b: заливки по компактности (erode)</h2><img src="diag-zones-color.png"><div style="font-size:.74rem;color:#8E8E93;margin-top:6px">каждая заливка-область своим цветом, границы чёрным. Елховка должна быть областью, а не границей</div></div>
+    <div class="panel"><h2>Шаг 3a: ТОЛЬКО границы</h2><img src="diag-borders.png"><div style="font-size:.74rem;color:#8E8E93;margin-top:6px">линии между разными заливками + внешний контур</div></div>
+    <div class="panel"><h2>Шаг 3c: остальное (текст+точки)</h2><img src="diag-other.png"><div style="font-size:.74rem;color:#8E8E93;margin-top:6px">текст подписей + кружки городов</div></div>
+    <div class="panel"><h2>Шаг 3b: заливки по компактности (erode)</h2><img src="diag-zones-color.png"><div style="font-size:.74rem;color:#8E8E93;margin-top:6px">каждая заливка-область своим цветом (Елховка должна быть областью)</div></div>
     <div class="panel"><h2>Шаг 4: города (тёмнее 80)</h2><img src="diag-cities.png"><div style="font-size:.74rem;color:#8E8E93;margin-top:6px">белое = кружки-столицы + текст</div></div>
     <div class="panel"><h2>Итоговый SVG</h2>
       <svg xmlns="http://www.w3.org/2000/svg" width="633" height="777" viewBox="0 0 633 777">
