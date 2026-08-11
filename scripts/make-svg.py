@@ -1,0 +1,176 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""make-svg.py — собирает финальный SVG карты из доработанных в Paint границ.
+
+Вход: reference/paint-editable/1-borders.png  (белые линии границ, жирные)
+      reference/paint-editable/3-fill-zones.png (заливки областей, ориентир)
+Выход: prototype/map-final.svg
+
+Алгоритм:
+  1. Границы (белые) → тонкий скелет (erode до ~2px), сглаживание.
+  2. Чёрные ячейки между границами = области (connectedComponents, без края).
+  3. Каждая область = отдельная сущность: свой цвет-заливка + id.
+  4. Собираем SVG: <path> областей (заливки) + слой границ (толщина 2) + опционально точки.
+"""
+from __future__ import annotations
+
+import cv2
+import numpy as np
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+BORDERS = ROOT / "reference" / "paint-editable" / "1-borders.png"
+OUT = ROOT / "prototype" / "map-final.svg"
+
+PALETTE = ["#EAD9BC", "#DDE3C8", "#F0DFB8", "#D7E0CF", "#EFDCC9", "#E3E0CC",
+           "#EDD8C0", "#DBE2C9", "#F2E0C0", "#D9E1CE"]
+
+
+def contour_to_path(contour, eps=0.003) -> str:
+    peri = cv2.arcLength(contour, True)
+    poly = cv2.approxPolyDP(contour, eps * peri, True)
+    pts = poly.reshape(-1, 2)
+    if len(pts) < 3:
+        return ""
+    d = f"M{pts[0][0]},{pts[0][1]} "
+    for x, y in pts[1:]:
+        d += f"L{x},{y} "
+    d += "Z"
+    return d
+
+
+def zhang_suen(bin_img: np.ndarray) -> np.ndarray:
+    """Zhang-Suen thinning: 1 = граница, 0 = фон. Возвращает скелет (1px)."""
+    img = bin_img.copy()
+    h, w = img.shape
+    changed = True
+    while changed:
+        changed = False
+        # подэтап 1
+        t = img.copy()
+        for y in range(1, h - 1):
+            for x in range(1, w - 1):
+                if img[y, x] == 0:
+                    continue
+                p2, p3, p4, p5, p6, p7, p8, p9 = (
+                    img[y-1,x], img[y-1,x+1], img[y,x+1], img[y+1,x+1],
+                    img[y+1,x], img[y+1,x-1], img[y,x-1], img[y-1,x-1])
+                b = p2+p3+p4+p5+p6+p7+p8+p9
+                seq = [p2,p3,p4,p5,p6,p7,p8,p9,p2]
+                a = sum(1 for i in range(8) if seq[i] == 0 and seq[i+1] == 1)
+                if 2 <= b <= 6 and a == 1 and p2*p4*p6 == 0 and p4*p6*p8 == 0:
+                    t[y, x] = 0
+                    changed = True
+        img = t
+        # подэтап 2
+        t = img.copy()
+        for y in range(1, h - 1):
+            for x in range(1, w - 1):
+                if img[y, x] == 0:
+                    continue
+                p2, p3, p4, p5, p6, p7, p8, p9 = (
+                    img[y-1,x], img[y-1,x+1], img[y,x+1], img[y+1,x+1],
+                    img[y+1,x], img[y+1,x-1], img[y,x-1], img[y-1,x-1])
+                b = p2+p3+p4+p5+p6+p7+p8+p9
+                seq = [p2,p3,p4,p5,p6,p7,p8,p9,p2]
+                a = sum(1 for i in range(8) if seq[i] == 0 and seq[i+1] == 1)
+                if 2 <= b <= 6 and a == 1 and p2*p4*p8 == 0 and p2*p6*p8 == 0:
+                    t[y, x] = 0
+                    changed = True
+        img = t
+    return img
+
+
+def smooth_path(contour, k=3):
+    """сглаживание полигона скользящим средним"""
+    pts = contour.reshape(-1, 2).astype(np.float64)
+    if len(pts) < 4:
+        return contour
+    n = len(pts)
+    out = np.zeros_like(pts)
+    for i in range(n):
+        idx = [(i - k + j) % n for j in range(2 * k + 1)]
+        out[i] = pts[idx].mean(axis=0)
+    return out.astype(np.int32).reshape(-1, 1, 2)
+
+
+def main() -> int:
+    if not BORDERS.exists():
+        print(f"нет входа: {BORDERS}")
+        return 1
+    img = cv2.imread(str(BORDERS), cv2.IMREAD_GRAYSCALE)
+    h, w = img.shape
+    print(f"границы: {w}x{h}")
+
+    # 1. скелетонизация линий до 1px (Zhang-Suen)
+    bw = (img > 127).astype(np.uint8)  # 1 = белая линия
+    skel = zhang_suen(bw)
+    print(f"скелет px: {skel.sum()} (было {bw.sum()})")
+    # 2. утолстим до ~2px
+    thin = cv2.dilate(skel, np.ones((3, 3), np.uint8), iterations=1)
+    print(f"границ после dilate: {thin.sum()} px")
+
+    # 2. области = чёрные ячейки между границами
+    black = (thin == 0).astype(np.uint8)
+    n, labels, stats, cent = cv2.connectedComponentsWithStats(black, connectivity=8)
+    edge = set()
+    for i in range(1, n):
+        x, y, bw, bh, a = stats[i]
+        if x == 0 or y == 0 or x + bw == w or y + bh == h:
+            edge.add(i)
+    regions = [i for i in range(1, n) if i not in edge and stats[i][4] > 300]
+    regions.sort(key=lambda i: -stats[i][4])
+    print(f"областей: {len(regions)}")
+
+    # 3. границы как контуры: внешние и внутренние
+    borders_map = (thin * 255).astype(np.uint8)
+    bconts, _ = cv2.findContours(borders_map, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+    border_paths = []
+    for c in bconts:
+        a = cv2.contourArea(c)
+        if a > 20:  # убрать точки-мусор
+            sm = smooth_path(c)
+            d = contour_to_path(sm)
+            if d:
+                border_paths.append(d)
+    print(f"линий-границ: {len(border_paths)}")
+
+    # 4. SVG
+    region_paths = []
+    for idx, ri in enumerate(regions):
+        mask = (labels == ri).astype(np.uint8)
+        conts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not conts:
+            continue
+        sm = smooth_path(max(conts, key=cv2.contourArea))
+        d = contour_to_path(sm)
+        if d:
+            color = PALETTE[idx % len(PALETTE)]
+            region_paths.append(f'<path d="{d}" fill="{color}" data-region="r{idx}"/>')
+
+    borders_svg = "\n".join(
+        f'<path d="{d}" fill="none" stroke="#2B2317" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>'
+        for d in border_paths
+    )
+
+    svg = f"""<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}">
+  <rect width="{w}" height="{h}" fill="#F2E8D5"/>
+  <!-- СЛОЙ 1: области-регионы (каждая сущность своим цветом) -->
+  <g id="regions">
+{"\n".join(region_paths)}
+  </g>
+  <!-- СЛОЙ 2: границы (2px) -->
+  <g id="borders">
+{borders_svg}
+  </g>
+</svg>
+"""
+    OUT.write_text(svg, encoding="utf-8")
+    print(f"OK: {OUT} · {len(region_paths)} областей, {len(border_paths)} линий, {len(svg)} bytes")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
