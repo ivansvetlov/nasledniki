@@ -95,6 +95,77 @@ def smooth_path(contour, k=3):
     return out.astype(np.int32).reshape(-1, 1, 2)
 
 
+def trace_skeleton(skel: np.ndarray, min_len: int = 6) -> list[str]:
+    """Трассирует 1px-скелет в длинные полилинии (центральные линии).
+    Проходит ЧЕРЕЗ узлы-ветвления, не обрываясь: в узле продолжает по соседу,
+    максимально близкому к текущему направлению. Возвращает список SVG-путей."""
+    h, w = skel.shape
+    pts = set()
+    for y in range(h):
+        for x in range(w):
+            if skel[y, x]:
+                pts.add((x, y))
+
+    def neighbors(x, y):
+        return [(x + dx, y + dy) for dx in (-1, 0, 1) for dy in (-1, 0, 1)
+                if (dx, dy) != (0, 0) and (x + dx, y + dy) in pts]
+
+    paths: list[list[tuple[int, int]]] = []
+    # строим все линии
+    while pts:
+        start = pts.pop()
+        path = [start]
+
+        def extend_toward(current, prev, banned):
+            # идём, пока есть ровно один "не-откатывающийся" сосед; в узле выбираем по направлению
+            while True:
+                ns = [p for p in neighbors(*current) if p != prev]
+                if not ns:
+                    break
+                if len(ns) == 1:
+                    nxt = ns[0]
+                else:
+                    # ветвление: выбираем соседа, наиболее близкого к направлению движения
+                    if len(path) >= 2:
+                        dx = current[0] - path[-2][0]
+                        dy = current[1] - path[-2][1]
+                    else:
+                        dx, dy = 1, 0
+                    nxt = min(ns, key=lambda p: abs((p[0]-current[0]) - dx) + abs((p[1]-current[1]) - dy))
+                if nxt in banned:
+                    break
+                path.append(nxt)
+                banned.add(nxt)
+                pts.discard(nxt)
+                prev, current = current, nxt
+        # растекаемся в обе стороны от start
+        banned = set(path)
+        extend_toward(start, None, banned)
+        path = path[::-1]
+        banned = set(path)
+        extend_toward(start, None, banned)
+
+        if len(path) >= min_len:
+            sm = smooth_polyline(path, k=2)
+            d = " ".join(f"L{x},{y}" for x, y in sm[1:])
+            paths.append(f"M{sm[0][0]},{sm[0][1]} {d}")
+    return paths
+
+
+def smooth_polyline(path: list, k: int = 2) -> list:
+    """сглаживание ломаной (не замкнутой) скользящим средним"""
+    if len(path) < 4:
+        return path
+    arr = np.array(path, dtype=np.float64)
+    n = len(arr)
+    out = np.zeros_like(arr)
+    for i in range(n):
+        lo = max(0, i - k)
+        hi = min(n - 1, i + k)
+        out[i] = arr[lo:hi + 1].mean(axis=0)
+    return [(int(round(a)), int(round(b))) for a, b in out]
+
+
 def main() -> int:
     if not BORDERS.exists():
         print(f"нет входа: {BORDERS}")
@@ -123,18 +194,11 @@ def main() -> int:
     regions.sort(key=lambda i: -stats[i][4])
     print(f"областей: {len(regions)}")
 
-    # 3. границы как контуры: внешние и внутренние
-    borders_map = (thin * 255).astype(np.uint8)
-    bconts, _ = cv2.findContours(borders_map, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
-    border_paths = []
-    for c in bconts:
-        a = cv2.contourArea(c)
-        if a > 20:  # убрать точки-мусор
-            sm = smooth_path(c)
-            d = contour_to_path(sm)
-            if d:
-                border_paths.append(d)
-    print(f"линий-границ: {len(border_paths)}")
+    # 3. границы: трассировка скелета (1px) в ПОЛИЛИНИИ по центральной линии.
+    #    findContours даёт «трубку» вокруг линии (2 стороны) — не подходит.
+    skel = (skel > 0).astype(np.uint8)
+    border_paths = trace_skeleton(skel, min_len=28)
+    print(f"линий-границ (одинарных): {len(border_paths)}")
 
     # 4. SVG
     region_paths = []
