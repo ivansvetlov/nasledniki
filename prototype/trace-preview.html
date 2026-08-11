@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>НаСЛЕДНИКИ — трассировка карты (проверка)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet">
+<style>
+  :root{--bg:#F6F6F4;--border:#E5E5E1;--ink:#18181B;--ink-mute:#8E8E93;--terra:#C76B47;--sage:#7C8B6F}
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--ink);padding:30px;line-height:1.5}
+  .wrap{max-width:1200px;margin:0 auto}
+  h1{font-size:1.5rem;font-weight:700;margin-bottom:4px}
+  .sub{color:var(--ink-mute);font-size:.9rem;margin-bottom:20px}
+  .bar{display:flex;gap:16px;align-items:center;flex-wrap:wrap;margin-bottom:18px;padding:14px 18px;background:#fff;border:1px solid var(--border);border-radius:12px}
+  .bar label{display:flex;align-items:center;gap:8px;font-size:.85rem;font-weight:500;cursor:pointer}
+  .bar input{width:16px;height:16px;accent-color:var(--terra)}
+  .cols{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+  .panel{background:#fff;border:1px solid var(--border);border-radius:14px;padding:16px;position:relative}
+  .panel h2{font-size:.8rem;font-weight:600;text-transform:uppercase;letter-spacing:.08em;color:var(--ink-mute);margin-bottom:12px}
+  .stage{position:relative;width:100%;overflow:hidden;border-radius:10px;border:1px solid var(--border)}
+  .stage img,.stage svg{position:absolute;inset:0;width:100%;height:100%;object-fit:contain}
+  .stage svg{background:#F2E8D5}
+  .overlay{position:relative;width:100%;aspect-ratio:633/777}
+  .overlay img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain}
+  .overlay svg{position:absolute;inset:0;width:100%;height:100%}
+  .controls{margin-top:14px;display:flex;gap:10px;flex-wrap:wrap}
+  .btn{border:1.5px solid var(--border);background:#fff;border-radius:999px;padding:6px 14px;font-family:'JetBrains Mono',monospace;font-size:.7rem;cursor:pointer;color:var(--ink-mute);transition:all .15s}
+  .btn.on{background:var(--terra);border-color:var(--terra);color:#fff}
+  .stat{font-family:'JetBrains Mono',monospace;font-size:.68rem;color:var(--sage);margin-top:10px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Трассировка карты — проверка</h1>
+  <div class="sub">Слева оригинал · справа мой SVG из трассировки · слои можно выключать</div>
+
+  <div class="bar">
+    <label><input type="checkbox" id="cbZones" checked> Зоны (заливки областей)</label>
+    <label><input type="checkbox" id="cbCities" checked> Города (точки)</label>
+    <label><input type="checkbox" id="cbOriginal"> Оригинал (для сравнения)</label>
+  </div>
+
+  <div class="cols">
+    <div class="panel">
+      <h2>Оригинал</h2>
+      <div class="stage"><img src="../reference/samara-oblast-map.jpg" alt="карта"></div>
+    </div>
+    <div class="panel">
+      <h2>Трассированный SVG</h2>
+      <div class="overlay" id="overlay">
+        <img src="../reference/samara-oblast-map.jpg" alt="оригинал" id="origImg">
+        <div id="svgHost"></div>
+      </div>
+      <div class="stat" id="stat"></div>
+    </div>
+  </div>
+</div>
+<script>
+(async function(){
+  // грузим SVG текстом
+  var r = await fetch('../prototype/map-traced.svg');
+  var svgText = await r.text();
+  var host = document.getElementById('svgHost');
+  host.innerHTML = svgText;
+  var svg = host.querySelector('svg');
+  svg.style.position='absolute'; svg.style.inset='0'; svg.style.width='100%'; svg.style.height='100%';
+  var zones = host.querySelector('#zones');
+  var cities = host.querySelector('#cities');
+  document.getElementById('stat').textContent = 'зон: '+zones.children.length+' · городов: '+cities.children.length;
+
+  document.getElementById('cbZones').addEventListener('change',function(e){zones.style.display=e.target.checked?'':'none';});
+  document.getElementById('cbCities').addEventListener('change',function(e){cities.style.display=e.target.checked?'':'none';});
+  document.getElementById('cbOriginal').addEventListener('change',function(e){document.getElementById('origImg').style.opacity=e.target.checked?'.5':'0';});
+})();
+</script>
+</body>
+</html>
