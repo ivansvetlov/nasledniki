@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""make-svg.py — собирает финальный SVG карты из доработанных в Paint границ.
+"""make-svg.py — JPG карты → SVG заливок районов. Без Paint, без обводки.
 
-Вход: reference/paint-editable/1-borders.png  (белые линии границ, жирные)
-      reference/paint-editable/3-fill-zones.png (заливки областей, ориентир)
-Выход: prototype/map-final.svg
+Вход:  reference/samara-oblast-map.jpg
+Выход: prototype/map-fills-only.svg
 
-Алгоритм:
-  1. Границы (белые) → тонкий скелет (erode до ~2px), сглаживание.
-  2. Чёрные ячейки между границами = области (connectedComponents, без края).
-  3. Каждая область = отдельная сущность: свой цвет-заливка + id.
-  4. Собираем SVG: <path> областей (заливки) + слой границ (толщина 2) + опционально точки.
+Рабочая модель — растровая разметка (пиксель → id района).
+В SVG уходит только контур каждой метки: список вершин (x, y) + fill.
+Цвет не хранится в точках. Слоя границ нет: щель между районами = подложка.
+
+См. docs/MAP-PIPELINE.md.
 """
 from __future__ import annotations
 
@@ -20,254 +19,152 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-BORDERS = ROOT / "reference" / "paint-editable" / "1-borders.png"
-OUT = ROOT / "prototype" / "map-final.svg"
+SRC = ROOT / "reference" / "samara-oblast-map.jpg"
+OUT = ROOT / "prototype" / "map-fills-only.svg"
+DIAG = ROOT / "prototype" / "_iter1-labels.png"
 
-PALETTE = ["#EAD9BC", "#DDE3C8", "#F0DFB8", "#D7E0CF", "#EFDCC9", "#E3E0CC",
-           "#EDD8C0", "#DBE2C9", "#F2E0C0", "#D9E1CE"]
+PALETTE = [
+    "#EAD9BC", "#DDE3C8", "#F0DFB8", "#D7E0CF", "#EFDCC9",
+    "#E3E0CC", "#EDD8C0", "#DBE2C9", "#F2E0C0", "#D9E1CE",
+]
+BG = "#F2E8D5"
+MIN_AREA = 700
+LINE_T = 120          # темнее — кандидат в чернила (линии/текст/точки)
+DILATE_ITERS = 2      # «пожирнее», вместо Paint
+EPS_PX = 1.2          # упрощение контура в пикселях, не доля периметра
 
 
-def contour_to_path(contour, eps=0.003) -> str:
-    peri = cv2.arcLength(contour, True)
-    poly = cv2.approxPolyDP(contour, eps * peri, True)
+def territory_mask(gray: np.ndarray) -> np.ndarray:
+    m = (gray < 250).astype(np.uint8) * 255
+    m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8))
+    m = cv2.morphologyEx(m, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+    cnts, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not cnts:
+        raise RuntimeError("территория не найдена")
+    out = np.zeros_like(gray)
+    cv2.drawContours(out, [max(cnts, key=cv2.contourArea)], -1, 255, -1)
+    return out
+
+
+def ink_components(gray: np.ndarray, terr: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    dark = ((gray < LINE_T) & (terr > 0)).astype(np.uint8)
+    closed = cv2.morphologyEx(dark, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(closed, connectivity=8)
+    return labels, stats, closed
+
+
+def inpaint_debris(gray: np.ndarray, labels: np.ndarray, stats: np.ndarray) -> np.ndarray:
+    """Главная связная компонента чернил = сеть границ. Остальное (буквы, точки) затираем."""
+    if stats.shape[0] < 2:
+        return gray
+    areas = stats[1:, 4]
+    main = 1 + int(np.argmax(areas))
+    debris = ((labels > 0) & (labels != main)).astype(np.uint8) * 255
+    if int(debris.sum()) == 0:
+        return gray
+    return cv2.inpaint(gray, debris, 3, cv2.INPAINT_TELEA)
+
+
+def line_mask(gray: np.ndarray, terr: np.ndarray) -> np.ndarray:
+    labels, stats, closed = ink_components(gray, terr)
+    if stats.shape[0] < 2:
+        return closed
+    areas = stats[1:, 4]
+    main = 1 + int(np.argmax(areas))
+    lines = (labels == main).astype(np.uint8)
+    # обрывки линий, не прилипшие к сети
+    for i in range(1, stats.shape[0]):
+        if i == main:
+            continue
+        x, y, bw, bh, a = stats[i]
+        long_thin = a > 80 and max(bw, bh) > 40 and min(bw, bh) < 14
+        if long_thin:
+            lines[labels == i] = 1
+    return lines
+
+
+def extract_regions(gray: np.ndarray) -> tuple[list[np.ndarray], np.ndarray]:
+    terr = territory_mask(gray)
+    labels0, stats0, _ = ink_components(gray, terr)
+    cleaned = inpaint_debris(gray, labels0, stats0)
+    lines = line_mask(cleaned, terr)
+    thick = cv2.dilate(lines, np.ones((3, 3), np.uint8), iterations=DILATE_ITERS)
+    cells = ((terr > 0) & (thick == 0)).astype(np.uint8)
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(cells, connectivity=4)
+    regions = [i for i in range(1, n) if stats[i][4] >= MIN_AREA]
+    regions.sort(key=lambda i: -stats[i][4])
+    return regions, labels
+
+
+def contour_to_d(contour: np.ndarray, eps_px: float = EPS_PX) -> str:
+    poly = cv2.approxPolyDP(contour, eps_px, True)
     pts = poly.reshape(-1, 2)
     if len(pts) < 3:
         return ""
-    d = f"M{pts[0][0]},{pts[0][1]} "
-    for x, y in pts[1:]:
-        d += f"L{x},{y} "
-    d += "Z"
-    return d
+    parts = [f"M{int(pts[0][0])},{int(pts[0][1])}"]
+    parts += [f"L{int(x)},{int(y)}" for x, y in pts[1:]]
+    parts.append("Z")
+    return " ".join(parts)
 
 
-def zhang_suen(bin_img: np.ndarray) -> np.ndarray:
-    """Zhang-Suen thinning: 1 = граница, 0 = фон. Возвращает скелет (1px)."""
-    img = bin_img.copy()
-    h, w = img.shape
-    changed = True
-    while changed:
-        changed = False
-        # подэтап 1
-        t = img.copy()
-        for y in range(1, h - 1):
-            for x in range(1, w - 1):
-                if img[y, x] == 0:
-                    continue
-                p2, p3, p4, p5, p6, p7, p8, p9 = (
-                    img[y-1,x], img[y-1,x+1], img[y,x+1], img[y+1,x+1],
-                    img[y+1,x], img[y+1,x-1], img[y,x-1], img[y-1,x-1])
-                b = p2+p3+p4+p5+p6+p7+p8+p9
-                seq = [p2,p3,p4,p5,p6,p7,p8,p9,p2]
-                a = sum(1 for i in range(8) if seq[i] == 0 and seq[i+1] == 1)
-                if 2 <= b <= 6 and a == 1 and p2*p4*p6 == 0 and p4*p6*p8 == 0:
-                    t[y, x] = 0
-                    changed = True
-        img = t
-        # подэтап 2
-        t = img.copy()
-        for y in range(1, h - 1):
-            for x in range(1, w - 1):
-                if img[y, x] == 0:
-                    continue
-                p2, p3, p4, p5, p6, p7, p8, p9 = (
-                    img[y-1,x], img[y-1,x+1], img[y,x+1], img[y+1,x+1],
-                    img[y+1,x], img[y+1,x-1], img[y,x-1], img[y-1,x-1])
-                b = p2+p3+p4+p5+p6+p7+p8+p9
-                seq = [p2,p3,p4,p5,p6,p7,p8,p9,p2]
-                a = sum(1 for i in range(8) if seq[i] == 0 and seq[i+1] == 1)
-                if 2 <= b <= 6 and a == 1 and p2*p4*p8 == 0 and p2*p6*p8 == 0:
-                    t[y, x] = 0
-                    changed = True
-        img = t
-    return img
+def write_svg(paths: list[tuple[str, str, int]], w: int, h: int, dest: Path) -> None:
+    body = []
+    for d, color, idx in paths:
+        body.append(f'<path d="{d}" fill="{color}" data-region="r{idx}"/>')
+    svg = (
+        f'<?xml version="1.0" encoding="UTF-8"?>\n'
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" '
+        f'viewBox="0 0 {w} {h}">\n'
+        f'  <rect width="{w}" height="{h}" fill="{BG}"/>\n'
+        f'  <g id="regions">\n'
+        + "\n".join(body)
+        + "\n  </g>\n</svg>\n"
+    )
+    dest.write_text(svg, encoding="utf-8")
 
 
-def smooth_path(contour, k=3):
-    """сглаживание полигона скользящим средним"""
-    pts = contour.reshape(-1, 2).astype(np.float64)
-    if len(pts) < 4:
-        return contour
-    n = len(pts)
-    out = np.zeros_like(pts)
-    for i in range(n):
-        idx = [(i - k + j) % n for j in range(2 * k + 1)]
-        out[i] = pts[idx].mean(axis=0)
-    return out.astype(np.int32).reshape(-1, 1, 2)
-
-
-def trace_skeleton(skel: np.ndarray, min_len: int = 6) -> list[str]:
-    """Трассирует 1px-скелет в длинные полилинии (центральные линии).
-    Проходит ЧЕРЕЗ узлы-ветвления, не обрываясь: в узле продолжает по соседу,
-    максимально близкому к текущему направлению. Возвращает список SVG-путей."""
-    h, w = skel.shape
-    pts = set()
-    for y in range(h):
-        for x in range(w):
-            if skel[y, x]:
-                pts.add((x, y))
-
-    def neighbors(x, y):
-        return [(x + dx, y + dy) for dx in (-1, 0, 1) for dy in (-1, 0, 1)
-                if (dx, dy) != (0, 0) and (x + dx, y + dy) in pts]
-
-    paths: list[list[tuple[int, int]]] = []
-    # строим все линии
-    while pts:
-        start = pts.pop()
-        path = [start]
-
-        def extend_toward(current, prev, banned):
-            # идём, пока есть ровно один "не-откатывающийся" сосед; в узле выбираем по направлению
-            while True:
-                ns = [p for p in neighbors(*current) if p != prev]
-                if not ns:
-                    break
-                if len(ns) == 1:
-                    nxt = ns[0]
-                else:
-                    # ветвление: выбираем соседа, наиболее близкого к направлению движения
-                    if len(path) >= 2:
-                        dx = current[0] - path[-2][0]
-                        dy = current[1] - path[-2][1]
-                    else:
-                        dx, dy = 1, 0
-                    nxt = min(ns, key=lambda p: abs((p[0]-current[0]) - dx) + abs((p[1]-current[1]) - dy))
-                if nxt in banned:
-                    break
-                path.append(nxt)
-                banned.add(nxt)
-                pts.discard(nxt)
-                prev, current = current, nxt
-        # растекаемся в обе стороны от start
-        banned = set(path)
-        extend_toward(start, None, banned)
-        path = path[::-1]
-        banned = set(path)
-        extend_toward(start, None, banned)
-
-        if len(path) >= min_len:
-            sm = smooth_polyline(path, k=2)
-            d = " ".join(f"L{x},{y}" for x, y in sm[1:])
-            paths.append(f"M{sm[0][0]},{sm[0][1]} {d}")
-    return paths
-
-
-def smooth_polyline(path: list, k: int = 2) -> list:
-    """сглаживание ломаной (не замкнутой) скользящим средним"""
-    if len(path) < 4:
-        return path
-    arr = np.array(path, dtype=np.float64)
-    n = len(arr)
-    out = np.zeros_like(arr)
-    for i in range(n):
-        lo = max(0, i - k)
-        hi = min(n - 1, i + k)
-        out[i] = arr[lo:hi + 1].mean(axis=0)
-    return [(int(round(a)), int(round(b))) for a, b in out]
+def save_label_preview(labels: np.ndarray, regions: list[int], dest: Path) -> None:
+    h, w = labels.shape
+    vis = np.full((h, w, 3), 242, np.uint8)
+    vis[:, :] = (0xF2, 0xE8, 0xD5)
+    rng = np.array(
+        [
+            [234, 217, 188], [221, 227, 200], [240, 223, 184], [215, 224, 207],
+            [239, 220, 201], [227, 224, 204], [237, 216, 192], [219, 226, 201],
+            [242, 224, 192], [217, 225, 206],
+        ],
+        dtype=np.uint8,
+    )
+    for idx, ri in enumerate(regions):
+        vis[labels == ri] = rng[idx % len(rng)]
+    cv2.imwrite(str(dest), cv2.cvtColor(vis, cv2.COLOR_RGB2BGR))
 
 
 def main() -> int:
-    if not BORDERS.exists():
-        print(f"нет входа: {BORDERS}")
+    if not SRC.exists():
+        print(f"нет входа: {SRC}")
         return 1
-    img = cv2.imread(str(BORDERS), cv2.IMREAD_GRAYSCALE)
-    h, w = img.shape
-    print(f"границы: {w}x{h}")
+    gray = cv2.imread(str(SRC), cv2.IMREAD_GRAYSCALE)
+    h, w = gray.shape
+    print(f"вход: {SRC.name} {w}x{h}")
 
-    # 1. скелетонизация линий до 1px (Zhang-Suen)
-    bw = (img > 127).astype(np.uint8)  # 1 = белая линия
-    skel = zhang_suen(bw)
-    print(f"скелет px: {skel.sum()} (было {bw.sum()})")
-    # 2. утолстим до ~2px
-    thin = cv2.dilate(skel, np.ones((3, 3), np.uint8), iterations=1)
-    print(f"границ после dilate: {thin.sum()} px")
+    regions, labels = extract_regions(gray)
+    print(f"районов: {len(regions)}")
 
-    # 2. области = чёрные ячейки между границами
-    black = (thin == 0).astype(np.uint8)
-    n, labels, stats, cent = cv2.connectedComponentsWithStats(black, connectivity=8)
-    edge = set()
-    for i in range(1, n):
-        x, y, bw, bh, a = stats[i]
-        if x == 0 or y == 0 or x + bw == w or y + bh == h:
-            edge.add(i)
-    regions = [i for i in range(1, n) if i not in edge and stats[i][4] > 300]
-    regions.sort(key=lambda i: -stats[i][4])
-    print(f"областей: {len(regions)}")
-
-    # 3. границы: трассировка скелета (1px) в ПОЛИЛИНИИ по центральной линии.
-    #    findContours даёт «трубку» вокруг линии (2 стороны) — не подходит.
-    skel_u8 = (skel > 0).astype(np.uint8)
-
-    # области = чёрные ячейки между линиями (метки для фильтра полосок)
-    # используем labels, уже посчитанные выше (из thin)
-    # 4. фильтр: оставляем линии, вдоль которых есть >=2 РАЗНЫЕ области (границы).
-    #    Полоски (вокруг одна область) выкидываем.
-    lines = trace_skeleton(skel_u8, min_len=10)
-
-    def line_has_multi_region(pts: list[tuple[int, int]]) -> bool:
-        """идём по линии, проверяем соседние области по обе стороны от каждой точки"""
-        seen = set()
-        for (x, y) in pts:
-            # пробуем точки перпендикулярно линии (по 8 направлениям)
-            for dx in (-2, -1, 1, 2):
-                for dy in (-2, -1, 1, 2):
-                    nx, ny = x + dx, y + dy
-                    if 0 <= nx < w and 0 <= ny < h:
-                        lb = int(labels[ny, nx])
-                        if lb > 0 and lb not in edge:
-                            seen.add(lb)
-            if len(seen) >= 2:
-                return True
-        return False
-
-    border_paths = []
-    removed_strips = 0
-    for d in lines:
-        # извлекаем точки из пути
-        d2 = d.replace("M", " ").replace("L", " ").strip()
-        pts = [(int(float(a.split(",")[0])), int(float(a.split(",")[1]))) for a in d2.split()]
-        if len(pts) < 15:  # слишком короткие — точно полоски/мусор
-            removed_strips += 1
-            continue
-        if line_has_multi_region(pts):
-            border_paths.append(d)
-        else:
-            removed_strips += 1
-    print(f"линий-границ: {len(border_paths)} (убрано полосок: {removed_strips})")
-
-    # 4. SVG
-    region_paths = []
+    paths: list[tuple[str, str, int]] = []
     for idx, ri in enumerate(regions):
         mask = (labels == ri).astype(np.uint8)
-        conts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        if not conts:
+        cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+        if not cnts:
             continue
-        sm = smooth_path(max(conts, key=cv2.contourArea))
-        d = contour_to_path(sm)
+        d = contour_to_d(max(cnts, key=cv2.contourArea))
         if d:
-            color = PALETTE[idx % len(PALETTE)]
-            region_paths.append(f'<path d="{d}" fill="{color}" data-region="r{idx}"/>')
+            paths.append((d, PALETTE[idx % len(PALETTE)], idx))
 
-    borders_svg = "\n".join(
-        f'<path d="{d}" fill="none" stroke="#2B2317" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>'
-        for d in border_paths
-    )
-
-    svg = f"""<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}">
-  <rect width="{w}" height="{h}" fill="#F2E8D5"/>
-  <!-- СЛОЙ 1: области-регионы (каждая сущность своим цветом) -->
-  <g id="regions">
-{"\n".join(region_paths)}
-  </g>
-  <!-- СЛОЙ 2: границы (2px) -->
-  <g id="borders">
-{borders_svg}
-  </g>
-</svg>
-"""
-    OUT.write_text(svg, encoding="utf-8")
-    print(f"OK: {OUT} · {len(region_paths)} областей, {len(border_paths)} линий, {len(svg)} bytes")
+    write_svg(paths, w, h, OUT)
+    save_label_preview(labels, regions, DIAG)
+    has_stroke = "stroke" in OUT.read_text(encoding="utf-8")
+    print(f"OK: {OUT} · {len(paths)} path · stroke={has_stroke} · diag={DIAG.name}")
     return 0
 
 

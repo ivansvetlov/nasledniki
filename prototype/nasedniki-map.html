@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>НаСЛЕДНИКИ — карта экспедиций</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Oswald:wght@500;600;700&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --paper:#F2E8D5; --paper-2:#E9DCC2; --ink:#2B2317; --ink-soft:#5A4B33;
+  --terra:#B4552D; --terra-2:#93401F; --sage:#6B7A4E; --sage-soft:#DDE3C8;
+  --gold:#C08A3E; --gold-soft:#F0DFB8; --night:#2E3B2C; --line:#C9B98F;
+  --font-head:'Oswald',sans-serif; --font-body:'Source Serif 4',serif; --font-mono:'JetBrains Mono',monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:var(--font-body);background:var(--paper);color:var(--ink);line-height:1.5;padding:30px}
+.wrap{max-width:1180px;margin:0 auto}
+.head{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;margin-bottom:8px;flex-wrap:wrap}
+.head h1{font-family:var(--font-head);font-weight:700;font-size:1.8rem;letter-spacing:.01em;text-transform:uppercase}
+.head .hint{font-family:var(--font-mono);font-size:.66rem;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-soft)}
+.rule{height:2px;background:linear-gradient(90deg,var(--terra),var(--gold));margin:0 0 22px}
+.legend{background:var(--paper-2);border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin-bottom:18px;font-size:.85rem}
+.legend h3{font-family:var(--font-head);font-weight:600;font-size:.95rem;text-transform:uppercase;letter-spacing:.04em;margin-bottom:10px}
+.legend .row{display:flex;align-items:center;gap:8px;margin:5px 0}
+.legend .sw{width:18px;height:18px;border-radius:5px;flex-shrink:0}
+.legend .mono{font-family:var(--font-mono);font-size:.68rem;color:var(--ink-soft)}
+.filters{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:18px}
+.fbtn{border:1.5px solid var(--line);background:transparent;border-radius:999px;padding:7px 16px;font-family:var(--font-mono);font-size:.72rem;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-soft);cursor:pointer;transition:all .15s}
+.fbtn:hover{border-color:var(--terra);color:var(--terra)}
+.fbtn.on{background:var(--terra);border-color:var(--terra);color:#FFF4E2}
+.map-shell{position:relative;border:2px solid rgba(43,35,23,.5);border-radius:16px;overflow:hidden;
+  background:linear-gradient(180deg,#EFE3C8,#EADCB8);box-shadow:0 20px 50px rgba(43,35,23,.22)}
+.map-shell::before{content:'';position:absolute;inset:0;z-index:0;pointer-events:none;opacity:.35;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.8' numOctaves='2'/%3E%3C/filter%3E%3Crect width='120' height='120' filter='url(%23n)'/%3E%3C/svg%3E")}
+.map-tools{position:absolute;top:14px;right:16px;z-index:20;display:flex;gap:8px}
+.map-tools button{width:40px;height:40px;border-radius:10px;border:1.5px solid var(--line);background:rgba(242,232,213,.9);color:var(--ink);font-family:var(--font-head);font-weight:700;font-size:1.2rem;cursor:pointer}
+.map-tools button:hover{background:var(--terra);color:#fff;border-color:var(--terra)}
+.svg-wrap{position:relative;width:100%;z-index:1}
+.svg-wrap svg{width:100%;height:auto;display:block}
+.region{transition:opacity .2s}
+.region.dim{opacity:.22}
+.region:hover path.region-fill{fill-opacity:.92}
+.region.active path.region-fill{stroke:var(--terra);stroke-width:2.2}
+.region-fill{fill:var(--sage-soft);stroke:rgba(43,35,23,.4);stroke-width:1.2}
+.region-fill.r2{fill:#F3E6C8}
+.region-fill.r3{fill:#E7EFDA}
+.region-fill.r4{fill:#F6E7D6}
+.hfill{fill:url(#hatch);opacity:.5;pointer-events:none}
+.hfill.r2{fill:url(#dots)}
+.hfill.r3{fill:url(#hatch2)}
+.pin{cursor:pointer}
+.pin .ico{fill:var(--terra);stroke:#FFF4E2;stroke-width:1.5}
+.pin-ring{animation:ping 2.2s ease-out infinite}
+@keyframes ping{0%{transform:scale(.5);opacity:.9}80%{transform:scale(2.3);opacity:0}100%{opacity:0}}
+.city-label{font-family:var(--font-head);font-weight:600;font-size:13px;letter-spacing:.05em;text-transform:uppercase;fill:var(--ink);pointer-events:none}
+.city-sub{font-family:var(--font-mono);font-size:8px;letter-spacing:.08em;fill:var(--ink-soft);pointer-events:none}
+.badge{font-family:var(--font-head);font-weight:700;font-size:11px;fill:var(--terra-2);stroke:#FFF4E2;stroke-width:2;pointer-events:none}
+.route{fill:none;stroke:var(--gold);stroke-width:2.2;stroke-dasharray:5 7;opacity:.8}
+.tip{position:absolute;z-index:30;pointer-events:none;background:var(--night);color:#F2E8D5;border-radius:10px;padding:12px 14px;min-width:190px;opacity:0;transform:translateY(6px);transition:opacity .18s;box-shadow:0 12px 30px rgba(43,35,23,.35);font-size:.82rem}
+.tip.show{opacity:1}
+.tip b{font-family:var(--font-head);font-size:.92rem;letter-spacing:.03em;text-transform:uppercase;display:block;margin-bottom:4px}
+.tip .t-row{display:flex;justify-content:space-between;gap:14px;color:#D5C9A8;font-size:.76rem;margin:2px 0}
+.tip .t-row b{color:var(--gold);font-family:var(--font-mono);font-size:.74rem;margin:0;display:inline}
+.map-caption{position:absolute;left:16px;bottom:14px;font-family:var(--font-mono);font-size:.6rem;letter-spacing:.1em;color:var(--ink-soft);opacity:.85;z-index:10}
+.stamp{position:absolute;right:18px;bottom:14px;border:2px solid var(--terra-2);color:var(--terra-2);border-radius:8px;padding:5px 14px;font-family:var(--font-head);font-weight:600;font-size:.72rem;letter-spacing:.14em;text-transform:uppercase;transform:rotate(-6deg);opacity:.8;z-index:10}
+.compass{position:absolute;top:14px;left:16px;width:46px;height:46px;border-radius:50%;background:rgba(242,232,213,.85);border:2px solid var(--line);display:grid;place-items:center;z-index:20}
+.compass svg{width:28px;height:28px;animation:spin 16s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:12px;margin-top:22px}
+.card{background:var(--paper-2);border:1px solid var(--line);border-radius:12px;padding:14px 16px;cursor:pointer}
+.card:hover,.card.active{border-color:var(--terra);transform:translateY(-2px);box-shadow:0 8px 20px rgba(43,35,23,.12)}
+.card h3{font-family:var(--font-head);font-size:1rem;text-transform:uppercase;letter-spacing:.02em}
+.card p{font-size:.8rem;color:var(--ink-soft)}
+.card .c-meta{font-family:var(--font-mono);font-size:.62rem;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-soft);margin-top:8px}
+.card .c-meta b{color:var(--sage)}
+.err{color:var(--terra-2);margin:12px 0;font-family:var(--font-mono);font-size:.75rem}
+.hint-note{font-family:var(--font-mono);font-size:.64rem;letter-spacing:.08em;color:var(--ink-soft);margin-top:16px;text-align:center}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="head">
+    <h1>Карта экспедиций · Самарская область</h1>
+    <div class="hint">контур из мастерской · оформление журнала</div>
+  </div>
+  <div class="rule"></div>
+  <div class="legend">
+    <h3>Легенда</h3>
+    <div class="row"><span class="sw" style="background:var(--sage-soft)"></span>район экспедиции</div>
+    <div class="row"><span class="sw" style="background:#E9DCC2"></span>остальная область</div>
+    <div class="row"><span class="sw" style="background:var(--gold)"></span>маршрут</div>
+    <div class="row"><span class="sw" style="background:var(--terra);border-radius:50%"></span>город · старт</div>
+    <div class="row mono">геометрия OSM · стиль как у журнальной карты</div>
+  </div>
+  <div class="filters" id="filters"></div>
+  <div class="map-shell">
+    <div class="map-tools">
+      <button type="button" id="z-in">+</button>
+      <button type="button" id="z-out">−</button>
+    </div>
+    <div class="compass"><svg viewBox="0 0 32 32" fill="none" stroke="var(--ink)" stroke-width="1.6"><circle cx="16" cy="16" r="13"/><path d="M16,3 L19,16 L16,29 L13,16 Z" fill="var(--terra)"/><path d="M16,3 L19,16 L16,16 Z" fill="#FFF4E2"/></svg></div>
+    <div class="svg-wrap" id="svgWrap"></div>
+    <div class="tip" id="tip"></div>
+    <div class="map-caption" id="caption">мастерская → стиль «Журнал Наследника»</div>
+    <div class="stamp">Приключение</div>
+  </div>
+  <p class="err" id="err"></p>
+  <div class="cards" id="cards"></div>
+  <div class="hint-note">path из /v1/maps/samara · штрих, пины и штамп — тема сайта, не заливка цеха</div>
+</div>
+<script>
+(function () {
+  var style = "nasedniki-journal";
+  var only = [];
+  var data = null;
+  var scale = 1;
+  var cls = ["", "r2", "r3", "r4"];
+  function api() {
+    var p = new URLSearchParams();
+    p.set("style", style);
+    if (only.length) p.set("ids", only.join(","));
+    return "/nasedniki/api/map?" + p.toString();
+  }
+  function esc(s) {
+    return String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;");
+  }
+  function paint() {
+    if (!data) return;
+    var vb = data.map.viewBox || "0 0 720 720";
+    var paper = (data.theme && data.theme.paper) || "#F2E8D5";
+    var opened = {};
+    (data.overlay.opened_zone_ids || []).forEach(function (id) { opened[id] = 1; });
+    var expIndex = {};
+    (data.overlay.expeditions || []).forEach(function (e, i) {
+      (e.zone_ids || []).forEach(function (id) { if (expIndex[id] == null) expIndex[id] = i; });
+    });
+    var defs =
+      "<defs>" +
+      '<pattern id="hatch" width="8" height="8" patternTransform="rotate(45)" patternUnits="userSpaceOnUse">' +
+      '<line x1="0" y1="0" x2="0" y2="8" stroke="rgba(107,122,78,.25)" stroke-width="1.2"/></pattern>' +
+      '<pattern id="hatch2" width="8" height="8" patternTransform="rotate(-45)" patternUnits="userSpaceOnUse">' +
+      '<line x1="0" y1="0" x2="0" y2="8" stroke="rgba(180,85,45,.18)" stroke-width="1.2"/></pattern>' +
+      '<pattern id="dots" width="9" height="9" patternUnits="userSpaceOnUse">' +
+      '<circle cx="2" cy="2" r="1.2" fill="rgba(192,138,62,.3)"/></pattern>' +
+      "</defs>";
+    var zones = (data.zones || []).map(function (z) {
+      var on = opened[z.id];
+      var hi = expIndex[z.id] != null ? cls[expIndex[z.id] % cls.length] : "";
+      var dim = !on && only.length ? " dim" : (!on ? " dim" : "");
+      var fillCls = "region-fill" + (hi ? " " + hi : "");
+      var hCls = "hfill" + (hi ? " " + hi : "");
+      return (
+        '<g class="region' + dim + (on ? " active" : "") + '" data-id="' + esc(z.id) + '">' +
+        '<path class="' + fillCls + '" d="' + z.d + '" fill-rule="evenodd"/>' +
+        '<path class="' + hCls + '" d="' + z.d + '"/>' +
+        "</g>"
+      );
+    }).join("");
+    var pins = "";
+    var routePts = [];
+    var pinColors = ["var(--terra)", "var(--sage)", "var(--gold)", "var(--terra-2)"];
+    (data.overlay.expeditions || []).forEach(function (e, i) {
+      if (!e.pin) return;
+      var x = e.pin.x, y = e.pin.y;
+      routePts.push([x, y]);
+      var col = pinColors[i % pinColors.length];
+      pins +=
+        '<g class="pin" data-city="' + esc(e.title) + '" data-i="' + i + '">' +
+        '<circle class="pin-ring" cx="' + x + '" cy="' + y + '" r="16" fill="' + col + '" opacity=".25"/>' +
+        '<circle class="ico" cx="' + x + '" cy="' + y + '" r="11" style="fill:' + col + '"/>' +
+        '<text class="city-label" x="' + x + '" y="' + (y + 28) + '" text-anchor="middle">' + esc(e.title) + "</text>" +
+        '<text class="city-sub" x="' + x + '" y="' + (y + 42) + '" text-anchor="middle">' + esc(e.subtitle || "") + "</text>" +
+        "</g>";
+    });
+    var route = "";
+    if (routePts.length > 1) {
+      var d = "M" + routePts[0][0] + "," + routePts[0][1];
+      for (var k = 1; k < routePts.length; k++)
+        d += " L" + routePts[k][0] + "," + routePts[k][1];
+      route = '<path class="route" d="' + d + '"/>';
+    }
+    document.getElementById("svgWrap").innerHTML =
+      '<svg viewBox="' + vb + '" preserveAspectRatio="xMidYMid meet" style="transform:scale(' + scale + ')">' +
+      defs + '<rect width="100%" height="100%" fill="' + paper + '"/>' +
+      zones + route + pins + "</svg>";
+    document.getElementById("caption").textContent =
+      (data.map.title || "Самара") + " · v" + data.map.version +
+      " · «" + data.theme.title + "» · " + data.zones.length + " районов OSM";
+    bindPins();
+    bindRegions();
+  }
+  function bindPins() {
+    var tip = document.getElementById("tip");
+    var wrap = document.getElementById("svgWrap");
+    wrap.querySelectorAll(".pin").forEach(function (p) {
+      p.addEventListener("mouseenter", function () {
+        var i = +p.getAttribute("data-i");
+        var e = (data.overlay.expeditions || [])[i];
+        if (!e) return;
+        tip.innerHTML =
+          "<b>" + esc(e.title) + "</b>" +
+          '<div class="t-row"><span>экспедиция</span><b>' + (e.open ? "открыта" : "скоро") + "</b></div>" +
+          '<div class="t-row"><span>район OSM</span><b>' + esc((e.zone_ids || []).join(", ")) + "</b></div>";
+        var r = wrap.getBoundingClientRect();
+        var ico = p.querySelector(".ico").getBoundingClientRect();
+        tip.classList.add("show");
+        tip.style.left = ico.left - r.left + 14 + "px";
+        tip.style.top = Math.max(8, ico.top - r.top - 8) + "px";
+      });
+      p.addEventListener("mouseleave", function () { tip.classList.remove("show"); });
+    });
+  }
+  function bindRegions() {
+    document.querySelectorAll(".region").forEach(function (g) {
+      g.addEventListener("click", function () {
+        var id = g.getAttribute("data-id");
+        only = only[0] === id && only.length === 1 ? [] : [id];
+        load();
+      });
+    });
+  }
+  function chips() {
+    var box = document.getElementById("filters");
+    box.innerHTML = "";
+    function add(label, ids, on) {
+      var b = document.createElement("button");
+      b.className = "fbtn" + (on ? " on" : "");
+      b.textContent = label;
+      b.onclick = function () {
+        only = ids.slice();
+        load();
+      };
+      box.appendChild(b);
+    }
+    add("Все районы", [], !only.length);
+    (data.overlay.expeditions || []).forEach(function (e) {
+      var ids = e.zone_ids || [];
+      add(e.title, ids, only.join() === ids.join() && only.length > 0);
+    });
+    (data.themes || []).forEach(function (t) {
+      if (t.id === "atlas-plain") return;
+      var b = document.createElement("button");
+      b.className = "fbtn" + (t.id === style ? " on" : "");
+      b.textContent = t.title;
+      b.onclick = function () {
+        style = t.id;
+        load();
+      };
+      box.appendChild(b);
+    });
+    var cards = document.getElementById("cards");
+    cards.innerHTML = "";
+    (data.overlay.expeditions || []).forEach(function (e) {
+      var d = document.createElement("div");
+      d.className = "card";
+      d.innerHTML =
+        "<h3>" + esc(e.title) + "</h3><p>" + esc(e.subtitle || "") + "</p>" +
+        '<div class="c-meta">' + (e.open ? "<b>открыто</b>" : "ещё впереди") +
+        " · OSM " + esc((e.zone_ids || []).join(", ")) + "</div>";
+      d.onclick = function () {
+        only = (e.zone_ids || []).slice();
+        load();
+      };
+      cards.appendChild(d);
+    });
+  }
+  function load() {
+    document.getElementById("err").textContent = "";
+    fetch(api(), { credentials: "include" })
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        if (j.error) {
+          document.getElementById("err").textContent = j.error;
+          return;
+        }
+        data = j;
+        chips();
+        paint();
+      })
+      .catch(function (e) {
+        document.getElementById("err").textContent = "нет снимка: " + e;
+      });
+  }
+  document.getElementById("z-in").onclick = function () {
+    scale = Math.min(2.4, scale * 1.25);
+    paint();
+  };
+  document.getElementById("z-out").onclick = function () {
+    scale = Math.max(0.7, scale / 1.25);
+    paint();
+  };
+  load();
+})();
+</script>
+</body>
+</html>

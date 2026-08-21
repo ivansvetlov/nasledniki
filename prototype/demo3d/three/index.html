@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>НаСЛЕДНИКИ · 3D рельеф Самарской области</title>
+<style>
+  body { margin: 0; overflow: hidden; background: #12161c; font-family: 'Segoe UI', sans-serif; color: #eee; }
+  #info {
+    position: absolute; top: 14px; left: 14px; z-index: 10;
+    background: rgba(10,14,20,.7); border: 1px solid rgba(255,255,255,.12);
+    border-radius: 10px; padding: 10px 14px; backdrop-filter: blur(6px);
+    font-size: 13px; pointer-events: none;
+  }
+  #info b { color: #ffd27d; }
+  #controls {
+    position: absolute; bottom: 14px; left: 50%; transform: translateX(-50%); z-index: 10;
+    display: flex; gap: 10px; background: rgba(10,14,20,.7); border: 1px solid rgba(255,255,255,.12);
+    border-radius: 10px; padding: 8px 12px; backdrop-filter: blur(6px);
+  }
+  #controls label { font-size: 12px; display: flex; align-items: center; gap: 6px; }
+  #controls input[type=range] { width: 120px; }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+<div id="info">
+  <b>Самарская область</b> · 3D рельеф из DEM (Жигули 0–384 м)<br>
+  <span id="stat">высоты: 0 м … 384 м</span> · вращение: левая/правая · скольжение: левая при зуме или Alt+левая · зум: колесо
+</div>
+<div id="controls">
+  <label>Вертикальное преувеличение
+    <input type="range" id="exag" min="1" max="30" step="1" value="2">
+  </label>
+  <label id="exagVal">×2</label>
+  <label>Скольжение при зуме
+    <input type="range" id="panDist" min="30" max="250" step="5" value="90">
+  </label>
+  <label id="panDistVal">90</label>
+  <label>Мин. зум
+    <input type="range" id="minDist" min="0.2" max="150" step="0.1" value="2">
+  </label>
+  <label id="minDistVal">2</label>
+</div>
+<script type="module" src="/main.js"></script>
+</body>
+</html>

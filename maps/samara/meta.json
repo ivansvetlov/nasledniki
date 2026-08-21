@@ -1,0 +1,12 @@
+{
+  "slug": "samara",
+  "name": "Самарская область",
+  "kind": "region",
+  "query": "Самарская область",
+  "osm_relation": 72193,
+  "display": "Самарская область",
+  "lat": 53.2,
+  "lon": 50.2,
+  "zones": 27,
+  "svg": "maps/samara/map.svg"
+}

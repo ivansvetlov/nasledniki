@@ -1,0 +1,13 @@
+{
+  "layers": [
+    {
+      "id": 2,
+      "name": "Волга",
+      "type": "overlay",
+      "visible": true,
+      "locked": false,
+      "collapsed": false
+    }
+  ],
+  "layerSeq": 2
+}

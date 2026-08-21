@@ -1,0 +1,9 @@
+accounts/
+published/
+accounts/**/sessions.json
+__pycache__/
+*.pyc
+node_modules/
+.venv/
+prototype/demo3d/three/node_modules/
+*.log
