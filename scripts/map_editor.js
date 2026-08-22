@@ -171,7 +171,7 @@
       var cy = e.clientY - r.top;
       var old = pan.s;
       var next = old * (e.deltaY > 0 ? 0.92 : 1.08);
-      next = Math.max(0.12, Math.min(8, next));
+      next = Math.max(0.12, Math.min(32, next));
       pan.x = cx - (cx - pan.x) * (next / old);
       pan.y = cy - (cy - pan.y) * (next / old);
       pan.s = next;
@@ -2960,28 +2960,46 @@
     }
     return { A: arcA, B: arcB };
   }
+  function interpolatingQuadratic(s, y, e, n) {
+    n = n || 28;
+    var vx = e[0] - s[0],
+      vy = e[1] - s[1];
+    var l2 = vx * vx + vy * vy || 1;
+    var t = ((y[0] - s[0]) * vx + (y[1] - s[1]) * vy) / l2;
+    t = Math.max(0.1, Math.min(0.9, t));
+    var u = 1 - t;
+    var den = 2 * u * t;
+    var ctrl = [
+      (y[0] - u * u * s[0] - t * t * e[0]) / den,
+      (y[1] - u * u * s[1] - t * t * e[1]) / den,
+    ];
+    return quadraticPts(s, ctrl, e, n);
+  }
   function deformPair(ringA, ringB, s, e, yellow, gap, walkA) {
     gap = gap == null ? SEAM_GAP : gap;
-    var walk =
-      walkA && walkA.length >= 2 ? walkA : walkShort(ringA, s, e);
-    var arc0 = densifyOpen(walk, 2);
-    var built = buildMidline(arc0, ringB);
-    if (!built) return { A: null, B: null };
-    var mid2 = pullWalk(built.mid, yellow);
-    var em = emitFromMidline(mid2, built.halfs, gap, penCentroid(ringA));
-    em.A[0] = s;
-    em.A[em.A.length - 1] = e;
+    var arcA = interpolatingQuadratic(s, yellow, e, 28);
+    arcA[0] = s;
+    arcA[arcA.length - 1] = e;
+    var arcB = offsetOpen(arcA, gap, penCentroid(ringB));
     var sb = closestOnRing(s, ringB);
     var eb = closestOnRing(e, ringB);
-    em.B[0] = sb;
-    em.B[em.B.length - 1] = eb;
-    var a2 = replaceFacingArc(ringA, s, e, em.A, yellow);
-    var b2 = replaceFacingArc(ringB, sb, eb, em.B, yellow);
+    var n = arcB.length;
+    for (var i = 0; i < n; i++) {
+      var t = n > 1 ? i / (n - 1) : 0;
+      var w = blend01(t);
+      var ex = sb[0] * (1 - t) + eb[0] * t;
+      var ey = sb[1] * (1 - t) + eb[1] * t;
+      arcB[i] = [arcB[i][0] * w + ex * (1 - w), arcB[i][1] * w + ey * (1 - w)];
+    }
+    arcB[0] = sb;
+    arcB[arcB.length - 1] = eb;
+    var a2 = replaceFacingArc(ringA, s, e, arcA, yellow);
+    var b2 = replaceFacingArc(ringB, sb, eb, arcB, yellow);
     if (a2 && b2) {
       a2 = clampRingGap(a2, b2, s, e, gap);
       b2 = clampRingGap(b2, a2, sb, eb, gap);
     }
-    return { A: a2, B: b2, mid: mid2 };
+    return { A: a2, B: b2 };
   }
   function clampRingGap(ring, other, s, e, gap) {
     var out = ring.slice();

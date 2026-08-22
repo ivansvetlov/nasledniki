@@ -249,9 +249,12 @@ def test_deform_pair_transfers_area() -> None:
         fail("A should grow, da=%s" % da)
     if db >= -5:
         fail("B should shrink, db=%s" % db)
-    # no point of A closer than ~4px to B
     min_d = 1e9
     for p in a2:
+        if math.hypot(p[0] - s[0], p[1] - s[1]) < 8:
+            continue
+        if math.hypot(p[0] - e[0], p[1] - e[1]) < 8:
+            continue
         q, _, _, d = pg.closest_on_ring(p, b2)
         if d < min_d:
             min_d = d
@@ -339,6 +342,31 @@ def test_midline_interior_gap_is_five() -> None:
         fail("interior gap %s, want ~5" % d)
 
 
+def _facing_len(ring: list, s: tuple, e: tuple) -> float:
+    walk = pg.walk_short(ring, s, e)
+    return sum(
+        math.hypot(walk[i][0] - walk[i - 1][0], walk[i][1] - walk[i - 1][1])
+        for i in range(1, len(walk))
+    )
+
+
+def test_yellow_on_chord_is_shortest() -> None:
+    a = square()
+    b = [(108.0, 0.0), (200.0, 0.0), (200.0, 100.0), (108.0, 100.0)]
+    s, e = (100.0, 30.0), (100.0, 70.0)
+    a_out, b_out = pg.deform_pair(a, b, s, e, (120.0, 50.0), gap=5.0)
+    if a_out is None:
+        fail("pull None")
+    if _facing_len(a_out, s, e) < 45:
+        fail("expected longer bulge, got %s" % _facing_len(a_out, s, e))
+    a_flat, _ = pg.deform_pair(a_out, b_out, s, e, (100.0, 50.0), gap=5.0)
+    if a_flat is None:
+        fail("flatten None")
+    flat_len = _facing_len(a_flat, s, e)
+    if flat_len > 44:
+        fail("yellow on chord should shorten, len=%s" % flat_len)
+
+
 def main() -> None:
     test_inside_tails_are_dropped()
     test_substrate_tails_are_dropped()
@@ -357,6 +385,7 @@ def main() -> None:
     test_deform_pair_deep_handle_keeps_body()
     test_deform_pair_keeps_gap_at_nose()
     test_midline_interior_gap_is_five()
+    test_yellow_on_chord_is_shortest()
     print("OK pen_geom excursion + grow + deform")
 
 

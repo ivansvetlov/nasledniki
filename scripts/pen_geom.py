@@ -618,6 +618,23 @@ def emit_from_midline(
     return arc_a, arc_b
 
 
+def interpolating_quadratic(
+    s: Point, y: Point, e: Point, n: int = 28
+) -> list[Point]:
+    """Quadratic through S, Y, E. Y on the chord S–E → the chord (shortest)."""
+    vx, vy = e[0] - s[0], e[1] - s[1]
+    l2 = vx * vx + vy * vy or 1.0
+    t = ((y[0] - s[0]) * vx + (y[1] - s[1]) * vy) / l2
+    t = min(0.9, max(0.1, t))
+    u = 1.0 - t
+    den = 2.0 * u * t
+    ctrl = (
+        (y[0] - u * u * s[0] - t * t * e[0]) / den,
+        (y[1] - u * u * s[1] - t * t * e[1]) / den,
+    )
+    return quadratic(s, ctrl, e, n)
+
+
 def deform_pair(
     ring_a: Ring,
     ring_b: Ring,
@@ -627,18 +644,21 @@ def deform_pair(
     gap: float = SEAM_GAP,
     walk_a: Optional[list[Point]] = None,
 ) -> tuple[Optional[list[Point]], Optional[list[Point]]]:
-    walk = walk_a if walk_a and len(walk_a) >= 2 else walk_short(ring_a, s, e)
-    arc0 = densify_open(walk, 2.0)
-    built = build_midline(arc0, ring_b)
-    if built is None:
-        return None, None
-    mid, halfs = built
-    mid2 = pull_walk(mid, yellow)
-    toward_a = _centroid(ring_a)
-    arc_a, arc_b = emit_from_midline(mid2, halfs, gap, toward_a)
+    del walk_a
+    arc_a = interpolating_quadratic(s, yellow, e, 28)
     arc_a[0], arc_a[-1] = s, e
+    arc_b = offset_open(arc_a, gap, _centroid(ring_b))
     sb, _, _, _ = closest_on_ring(s, ring_b)
     eb, _, _, _ = closest_on_ring(e, ring_b)
+    n = len(arc_b)
+    for i in range(n):
+        t = i / (n - 1) if n > 1 else 0.0
+        w = _blend01(t)
+        endp = (sb[0] * (1.0 - t) + eb[0] * t, sb[1] * (1.0 - t) + eb[1] * t)
+        arc_b[i] = (
+            arc_b[i][0] * w + endp[0] * (1.0 - w),
+            arc_b[i][1] * w + endp[1] * (1.0 - w),
+        )
     arc_b[0], arc_b[-1] = sb, eb
     a2 = replace_facing_arc(ring_a, s, e, arc_a, yellow)
     b2 = replace_facing_arc(ring_b, sb, eb, arc_b, yellow)
