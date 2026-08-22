@@ -327,3 +327,127 @@ def assemble_ring(
     return best
 
 
+def quadratic(s: Point, y: Point, e: Point, n: int = 24) -> list[Point]:
+    pts: list[Point] = []
+    if n < 2:
+        n = 2
+    for i in range(n + 1):
+        t = i / n
+        u = 1.0 - t
+        pts.append(
+            (
+                u * u * s[0] + 2 * u * t * y[0] + t * t * e[0],
+                u * u * s[1] + 2 * u * t * y[1] + t * t * e[1],
+            )
+        )
+    return pts
+
+
+def offset_open(pts: list[Point], dist: float, toward: Point) -> list[Point]:
+    if len(pts) < 2:
+        return list(pts)
+    nrms: list[Point] = []
+    for i in range(len(pts)):
+        if i == 0:
+            a, b = pts[0], pts[1]
+        elif i == len(pts) - 1:
+            a, b = pts[-2], pts[-1]
+        else:
+            a, b = pts[i - 1], pts[i + 1]
+        vx, vy = b[0] - a[0], b[1] - a[1]
+        ln = math.hypot(vx, vy) or 1.0
+        nrms.append((-vy / ln, vx / ln))
+    p0 = pts[len(pts) // 2]
+    n0 = nrms[len(pts) // 2]
+    dpos = math.hypot(p0[0] + n0[0] - toward[0], p0[1] + n0[1] - toward[1])
+    dneg = math.hypot(p0[0] - n0[0] - toward[0], p0[1] - n0[1] - toward[1])
+    sgn = 1.0 if dpos < dneg else -1.0
+    out: list[Point] = []
+    for p, nrm in zip(pts, nrms):
+        out.append((p[0] + sgn * nrm[0] * dist, p[1] + sgn * nrm[1] * dist))
+    return out
+
+
+def _walk_back(ring: Ring, i_from: int, i_to: int) -> list[Point]:
+    r = _closed(ring)
+    n = len(r)
+    pts: list[Point] = []
+    k = (i_from - 1 + n) % n
+    guard = 0
+    while k != i_to and guard <= n:
+        pts.append(r[k])
+        k = (k - 1 + n) % n
+        guard += 1
+    return pts
+
+
+def replace_facing_arc(
+    ring: Ring, s: Point, e: Point, new_pts: list[Point], near: Point
+) -> Optional[list[Point]]:
+    r = _closed(ring)
+    if len(r) < 3 or len(new_pts) < 2:
+        return None
+    _, _, iS, _ = closest_on_ring(s, r)
+    _, _, iE, _ = closest_on_ring(e, r)
+    if iS == iE:
+        around = r[iS + 1 :] + r[: iS + 1]
+        mx, my = (s[0] + e[0]) / 2, (s[1] + e[1]) / 2
+        d_short = math.hypot(mx - near[0], my - near[1])
+        cx, cy = _centroid(around if around else r)
+        d_long = math.hypot(cx - near[0], cy - near[1])
+        if d_short > d_long:
+            cand = list(new_pts)
+        elif _same_side_as_interior(near, r, s, e):
+            cand = new_pts + list(reversed(around))
+        else:
+            cand = new_pts + around
+    else:
+        arc_f = [s] + _walk_vertices(r, iS, iE) + [e]
+        arc_b = [s] + _walk_back(r, iS, iE) + [e]
+
+        def amid(arc: list[Point]) -> Point:
+            return arc[len(arc) // 2]
+
+        df = math.hypot(amid(arc_f)[0] - near[0], amid(arc_f)[1] - near[1])
+        db = math.hypot(amid(arc_b)[0] - near[0], amid(arc_b)[1] - near[1])
+        other = arc_b if df <= db else arc_f
+        cand = new_pts[:-1] + list(reversed(other))
+    orig = signed_area(r)
+    if (signed_area(cand) >= 0) != (orig >= 0):
+        cand = list(reversed(cand))
+    if len(cand) < 4:
+        return None
+    return cand
+
+
+
+def _nudge(p: Point, toward: Point, dist: float = 2.0) -> Point:
+    vx, vy = toward[0] - p[0], toward[1] - p[1]
+    ln = math.hypot(vx, vy) or 1.0
+    return (p[0] + vx / ln * dist, p[1] + vy / ln * dist)
+
+
+def deform_pair(
+    ring_a: Ring,
+    ring_b: Ring,
+    s: Point,
+    e: Point,
+    yellow: Point,
+    gap: float = SEAM_GAP,
+) -> tuple[Optional[list[Point]], Optional[list[Point]]]:
+    arc_a = quadratic(s, yellow, e, 28)
+    toward_b = _centroid(ring_b)
+    arc_b = offset_open(arc_a, gap, toward_b)
+    sb, _, _, _ = closest_on_ring(s, ring_b)
+    eb, _, _, _ = closest_on_ring(e, ring_b)
+    arc_b[0] = sb
+    arc_b[-1] = eb
+    mid_a = ((s[0] + e[0]) / 2.0, (s[1] + e[1]) / 2.0)
+    mid_b = ((sb[0] + eb[0]) / 2.0, (sb[1] + eb[1]) / 2.0)
+    a2 = replace_facing_arc(ring_a, s, e, arc_a, _nudge(mid_a, yellow, 2.0))
+    b2 = replace_facing_arc(ring_b, sb, eb, arc_b, _nudge(mid_b, yellow, 2.0))
+    return a2, b2
+
+
+
+

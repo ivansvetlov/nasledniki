@@ -1,5 +1,5 @@
 (function () {
-  var svg = document.querySelector("#stage svg:not(#ruler)");
+  var svg = document.querySelector("#stage svg:not(#ruler):not(#doodle):not(#pins)");
   var canvas = document.getElementById("draw");
   var doodleSvg = document.getElementById("doodle");
   var doodlePath = null;
@@ -66,6 +66,10 @@
   var pendingText = false;
   var textDrag = null;
   var selectedObj = null;
+  var seamPins = [];
+  var pinSeq = 0;
+  var pendingRibbon = null;
+  var ribbonDrag = null;
 
   function paths() {
     return Array.prototype.slice.call(
@@ -88,23 +92,20 @@
     return n < 1 ? n.toFixed(2).replace(/0+$/, "").replace(/\.$/, "") : String(n);
   }
   function strokeWidth() {
-    if (mode === "knife") return Math.max(1, gapPx);
     return thickness();
   }
   function inkAlphaMin() {
-    if (mode === "knife") return 90;
     return strokeWidth() < 1 ? 16 : 40;
   }
   function inkHits(ink, j) {
     return ink[j + 3] > inkAlphaMin();
   }
   function syncThickUi() {
-    var lock = mode === "knife";
-    if (thickEl) thickEl.disabled = lock;
+    if (thickEl) thickEl.disabled = false;
     var lab = thickEl && thickEl.closest ? thickEl.closest(".thick") : null;
-    if (lab) lab.classList.toggle("locked", lock);
+    if (lab) lab.classList.remove("locked");
     if (!thickVal) return;
-    thickVal.textContent = lock ? "щель " + gapPx : formatThick(thickness());
+    thickVal.textContent = formatThick(thickness());
   }
   thickEl.addEventListener("input", syncThickUi);
   syncThickUi();
@@ -116,7 +117,7 @@
     mode = m;
     canvas.style.pointerEvents =
       handMode || m !== "pick" ? "auto" : "none";
-    ["pick", "pen", "erase", "knife", "ruler", "marker"].forEach(function (id) {
+    ["pick", "pen", "ruler", "marker"].forEach(function (id) {
       var b = document.getElementById("btn-" + id);
       if (b) b.classList.toggle("on", mode === id);
     });
@@ -124,12 +125,7 @@
     viewport.classList.toggle("ruler", mode === "ruler");
     syncThickUi();
     if (hint) {
-      if (m === "knife")
-        hint.textContent =
-          "нож — рез толщиной щели карты (" + gapPx + " px), не кисть";
-      else if (m === "erase")
-        hint.textContent = "ластик — стереть в подложку, толщина кисти";
-      else if (m === "ruler")
+      if (m === "ruler")
         hint.textContent = magnetOn
           ? "клик — точка, веди мышь, второй клик — готово (магнит к кромке)"
           : "клик — точка, веди мышь, второй клик — готово";
@@ -142,6 +138,9 @@
       else if (m === "marker")
         hint.textContent =
           "маркер: нарисуй линию/контур поверх карты — она сохранится как подсказка";
+      else if (m === "pick")
+        hint.textContent =
+          "ПКМ на шов — красный якорь, ЛКМ — тянуть жёлтую, ПКМ по точке — удалить";
     }
   }
 
@@ -149,6 +148,7 @@
     stage.style.transform =
       "translate(" + pan.x + "px," + pan.y + "px) scale(" + pan.s + ")";
     if (ruler.a) renderRuler();
+    renderPins();
   }
   function fit() {
     var r = viewport.getBoundingClientRect();
@@ -233,6 +233,19 @@
         return;
       }
       if (e.button !== 0) return;
+      if (mode === "pick" && !handSticky && !space && !e.altKey) {
+        var rp = pos(e);
+        var hitPin = hitSeamPin(rp);
+        if (hitPin && hitPin.kind === "yellow") {
+          pendingTap = false;
+          pendingHand = false;
+          lastTap = 0;
+          beginRibbonFromPin(e, hitPin);
+          return;
+        }
+        var seam0 = pickSeamAt(rp);
+        if (seam0) pendingRibbon = { seam: seam0, x: rp.x, y: rp.y };
+      }
       var now = Date.now();
       var slop = e.pointerType === "touch" ? 44 : 32;
       if (
@@ -280,6 +293,19 @@
       startDragPan(e);
       return;
     }
+    if (ribbonDrag) {
+      e.preventDefault();
+      moveRibbon(e);
+      return;
+    }
+    if (pendingRibbon && press.maxd > 6 && mode === "pick" && !panning) {
+      pendingTap = false;
+      pendingHand = false;
+      lastTap = 0;
+      beginRibbonDrag(e, pendingRibbon.seam, pos(e), pendingRibbon);
+      pendingRibbon = null;
+      return;
+    }
     if (mode === "ruler" && ruler.live && !panning && !isChrome(e.target)) {
       ruler.b = snapPoint(e, ruler.a && ruler.a.id);
       renderRuler();
@@ -307,6 +333,13 @@
   function onViewportUp(e) {
     if (textDrag) textDrag = null;
     pendingHand = false;
+    if (ribbonDrag) {
+      endRibbon(e);
+      press.t = 0;
+      pendingRibbon = null;
+      return;
+    }
+    pendingRibbon = null;
     if (panning) {
       endPan(e);
       press.t = 0;
@@ -359,14 +392,6 @@
       e.preventDefault();
       setMode("pen");
     }
-    if (e.code === "KeyE") {
-      e.preventDefault();
-      setMode("erase");
-    }
-    if (e.code === "KeyK") {
-      e.preventDefault();
-      setMode("knife");
-    }
     if (e.code === "KeyR") {
       e.preventDefault();
       setMode("ruler");
@@ -394,6 +419,10 @@
       e.preventDefault();
       if (document.getElementById("ctx-menu")) {
         hideCtx();
+        return;
+      }
+      if (ribbonDrag) {
+        cancelRibbon();
         return;
       }
       if (ruler.a) {
@@ -452,8 +481,8 @@
           ? canMergeSelection()
             ? "ПКМ → объединить"
             : "разные слои — объединить нельзя"
-          : "карандаш отдаёт землю «" + short(target) + "», нож режет щель"
-        : "выберите район";
+          : "ПКМ на шов — красный якорь, ЛКМ — тянуть жёлтую, ПКМ по точке — удалить"
+        : "ПКМ на шов — красный якорь, ЛКМ — тянуть жёлтую, ПКМ по точке — удалить";
     fillZoneLayerSelect();
   }
 
@@ -1025,6 +1054,24 @@
       return;
     }
     if (isChrome(t)) return;
+    var pHit = pos(e);
+    var pinHit = hitSeamPin(pHit);
+    if (pinHit) {
+      removeSeamPin(pinHit);
+      renderPins();
+      if (hint)
+        hint.textContent =
+          pinHit.kind === "yellow" ? "жёлтая снята" : "якорь снят";
+      return;
+    }
+    var borderHit = nearestDistrictBorder(pHit, 12 / (pan.s || 1));
+    if (borderHit) {
+      addRedPin(borderHit);
+      renderPins();
+      if (hint)
+        hint.textContent = "якорь · ЛКМ — тянуть жёлтую, ПКМ по точке — удалить";
+      return;
+    }
     var hit = hitSvgAt(e);
     var kindEl =
       hit && hit.closest && hit.closest("text[data-kind],path[data-kind]");
@@ -1648,6 +1695,12 @@
     if (!quiet) {
       if (hint) hint.textContent = "отмена" + (last.label ? " · " + last.label : "");
       renderJournal();
+      penLog({
+        type: "undo",
+        label: last.label || last.type,
+        applied: false,
+        why: "undo",
+      });
     }
     scheduleSave();
     return true;
@@ -2043,7 +2096,7 @@
     snapshotStroke();
     drawing = true;
     canvas.setPointerCapture(ev.pointerId);
-    var p = mode === "knife" ? snapToTargetPoint(ev) : pos(ev);
+    var p = pos(ev);
     strokePts = [{ x: p.x, y: p.y }];
     if (mode === "pen" && doodleSvg) {
       doodlePath = document.createElementNS("http://www.w3.org/2000/svg", "path");
@@ -2053,7 +2106,7 @@
     } else {
       ctx.beginPath();
       ctx.moveTo(p.x, p.y);
-      ctx.strokeStyle = mode === "erase" ? "#c0392b" : "#111";
+      ctx.strokeStyle = "#111";
       ctx.globalCompositeOperation = "source-over";
       ctx.lineCap = "round";
       ctx.lineJoin = "round";
@@ -2065,7 +2118,7 @@
   canvas.addEventListener("pointermove", function (ev) {
     if (ruler.live) return;
     if (!drawing) return;
-    var p = mode === "knife" ? snapToTargetPoint(ev) : pos(ev);
+    var p = pos(ev);
     strokePts.push({ x: p.x, y: p.y });
     if (mode === "pen" && doodlePath) {
       doodlePath.setAttribute(
@@ -2120,12 +2173,6 @@
     } else if (mode === "marker") {
       if (!applyMarkerStroke())
         hint.textContent = "маркер: веди линию по карте";
-    } else if (mode === "knife") {
-      if (!target && L && L.type === "draw") applyOverlayErase();
-      else applyVoid("knife");
-    } else if (mode === "erase") {
-      if (!target && L && L.type === "draw") applyOverlayErase();
-      else applyVoid("erase");
     }
     ctx.clearRect(0, 0, W, H);
   }
@@ -2444,7 +2491,35 @@
     }
     return out;
   }
+  var lastPenEx = null;
+  function penLog(evt) {
+    evt = evt || {};
+    evt.t = Date.now();
+    evt.seq = (window.__penSeq = (window.__penSeq || 0) + 1);
+    window.__penLog = window.__penLog || [];
+    window.__penLog.push(evt);
+    var bar = document.getElementById("pen-log-bar");
+    if (bar)
+      bar.textContent =
+        "лог #" +
+        evt.seq +
+        " · " +
+        (evt.type || "?") +
+        " · " +
+        (evt.why || evt.target || "") +
+        (evt.applied ? " · записано" : "") +
+        " · чертите и Ctrl+Z, потом напишите «готово»";
+    try {
+      fetch("/api/pen-log", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(evt),
+        keepalive: true,
+      });
+    } catch (err) {}
+  }
   function extractExcursion(stroke, ring) {
+    lastPenEx = { why: "short_stroke", n: stroke ? stroke.length : 0, nContacts: 0, nPayload: 0 };
     if (!stroke || stroke.length < 2 || !ring || ring.length < 3) return null;
     var contacts = [];
     function pushC(s, pt) {
@@ -2467,7 +2542,11 @@
     contacts.sort(function (u, v) {
       return u.s - v.s;
     });
-    if (contacts.length < 2) return null;
+    lastPenEx.nContacts = contacts.length;
+    if (contacts.length < 2) {
+      lastPenEx.why = "contacts_lt_2";
+      return null;
+    }
     function sample(s) {
       if (s <= 0) return stroke[0];
       if (s >= stroke.length - 1) return stroke[stroke.length - 1];
@@ -2483,18 +2562,34 @@
       if (penLoc(sample(midS), ring) === "out")
         payload.push([contacts[c], contacts[c + 1]]);
     }
-    if (payload.length !== 1) return null;
+    lastPenEx.nPayload = payload.length;
+    if (payload.length !== 1) {
+      lastPenEx.why = payload.length === 0 ? "payloads_0" : "payloads_" + payload.length;
+      return null;
+    }
     var s0 = payload[0][0].s,
       S = payload[0][0].p,
       s1 = payload[0][1].s,
       E = payload[0][1].p;
-    if (s1 - s0 < 1e-4) return null;
+    if (s1 - s0 < 1e-4) {
+      lastPenEx.why = "span_tiny";
+      return null;
+    }
     var mid = [S];
     for (var m = 0; m < stroke.length; m++) {
       if (s0 < m && m < s1) mid.push(stroke[m]);
     }
     mid.push(E);
-    if (mid.length < 2) return null;
+    if (mid.length < 2) {
+      lastPenEx.why = "mid_short";
+      return null;
+    }
+    lastPenEx.why = "ok";
+    lastPenEx.S = [S[0], S[1]];
+    lastPenEx.E = [E[0], E[1]];
+    lastPenEx.s0 = s0;
+    lastPenEx.s1 = s1;
+    lastPenEx.midN = mid.length;
     return { S: S, E: E, mid: mid };
   }
   function penCentroid(ring) {
@@ -2598,6 +2693,147 @@
     if (!best || bestA < Math.abs(orig) * 0.45) return null;
     return best;
   }
+  function stripClosed(ring) {
+    var r = ring ? ring.slice() : [];
+    if (
+      r.length > 1 &&
+      r[0][0] === r[r.length - 1][0] &&
+      r[0][1] === r[r.length - 1][1]
+    )
+      r.pop();
+    return r;
+  }
+  function quadraticPts(s, y, e, n) {
+    n = n || 24;
+    if (n < 2) n = 2;
+    var pts = [];
+    for (var i = 0; i <= n; i++) {
+      var t = i / n,
+        u = 1 - t;
+      pts.push([
+        u * u * s[0] + 2 * u * t * y[0] + t * t * e[0],
+        u * u * s[1] + 2 * u * t * y[1] + t * t * e[1],
+      ]);
+    }
+    return pts;
+  }
+  function offsetOpen(pts, dist, toward) {
+    if (!pts || pts.length < 2) return pts ? pts.slice() : [];
+    var nrms = [];
+    for (var i = 0; i < pts.length; i++) {
+      var a, b;
+      if (i === 0) {
+        a = pts[0];
+        b = pts[1];
+      } else if (i === pts.length - 1) {
+        a = pts[pts.length - 2];
+        b = pts[pts.length - 1];
+      } else {
+        a = pts[i - 1];
+        b = pts[i + 1];
+      }
+      var vx = b[0] - a[0],
+        vy = b[1] - a[1];
+      var ln = Math.hypot(vx, vy) || 1;
+      nrms.push([-vy / ln, vx / ln]);
+    }
+    var p0 = pts[(pts.length / 2) | 0];
+    var n0 = nrms[(nrms.length / 2) | 0];
+    var dpos = Math.hypot(p0[0] + n0[0] - toward[0], p0[1] + n0[1] - toward[1]);
+    var dneg = Math.hypot(p0[0] - n0[0] - toward[0], p0[1] - n0[1] - toward[1]);
+    var sgn = dpos < dneg ? 1 : -1;
+    var out = [];
+    for (var k = 0; k < pts.length; k++)
+      out.push([
+        pts[k][0] + sgn * nrms[k][0] * dist,
+        pts[k][1] + sgn * nrms[k][1] * dist,
+      ]);
+    return out;
+  }
+  function walkBack(ring, iFrom, iTo) {
+    var pts = [];
+    var n = ring.length;
+    var k = (iFrom - 1 + n) % n;
+    var guard = 0;
+    while (k !== iTo && guard <= n) {
+      pts.push(ring[k]);
+      k = (k - 1 + n) % n;
+      guard++;
+    }
+    return pts;
+  }
+  function replaceFacingArc(ring, s, e, newPts, near) {
+    var r = stripClosed(ring);
+    if (r.length < 3 || !newPts || newPts.length < 2) return null;
+    var cS = closestOnRingIdx(s, r);
+    var cE = closestOnRingIdx(e, r);
+    if (!cS || !cE) return null;
+    var iS = cS.idx,
+      iE = cE.idx;
+    var cand;
+    if (iS === iE) {
+      var around = r.slice(iS + 1).concat(r.slice(0, iS + 1));
+      var mx = (s[0] + e[0]) / 2,
+        my = (s[1] + e[1]) / 2;
+      var dShort = Math.hypot(mx - near[0], my - near[1]);
+      var body = around.length ? around : r;
+      var cx = 0,
+        cy = 0;
+      for (var i = 0; i < body.length; i++) {
+        cx += body[i][0];
+        cy += body[i][1];
+      }
+      cx /= body.length || 1;
+      cy /= body.length || 1;
+      var dLong = Math.hypot(cx - near[0], cy - near[1]);
+      if (dShort > dLong) cand = newPts.slice();
+      else if (
+        Math.abs(penCross(s, e, near)) >= 1e-8 &&
+        penCross(s, e, near) > 0 === penCross(s, e, penCentroid(r)) > 0
+      )
+        cand = newPts.concat(around.slice().reverse());
+      else cand = newPts.concat(around);
+    } else {
+      var arcF = [s].concat(walkVerts(r, iS, iE), [e]);
+      var arcB = [s].concat(walkBack(r, iS, iE), [e]);
+      function amid(arc) {
+        return arc[(arc.length / 2) | 0];
+      }
+      var mf = amid(arcF),
+        mb = amid(arcB);
+      var df = Math.hypot(mf[0] - near[0], mf[1] - near[1]);
+      var db = Math.hypot(mb[0] - near[0], mb[1] - near[1]);
+      var other = df <= db ? arcB : arcF;
+      cand = newPts.slice(0, -1).concat(other.slice().reverse());
+    }
+    var orig = signedArea(r);
+    if (signedArea(cand) >= 0 !== orig >= 0) cand = cand.slice().reverse();
+    if (cand.length < 4) return null;
+    return cand;
+  }
+  function deformPair(ringA, ringB, s, e, yellow, gap) {
+    gap = gap == null ? SEAM_GAP : gap;
+    var mid = [(s[0] + e[0]) / 2, (s[1] + e[1]) / 2];
+    var ctrl = [2 * yellow[0] - mid[0], 2 * yellow[1] - mid[1]];
+    var arcA = quadraticPts(s, ctrl, e, 28);
+    var arcB = offsetOpen(arcA, gap, penCentroid(ringB));
+    var sb = closestOnRing(s, ringB);
+    var eb = closestOnRing(e, ringB);
+    arcB[0] = sb;
+    arcB[arcB.length - 1] = eb;
+    function nudge(p, toward, dist) {
+      var vx = toward[0] - p[0],
+        vy = toward[1] - p[1];
+      var ln = Math.hypot(vx, vy) || 1;
+      return [p[0] + (vx / ln) * dist, p[1] + (vy / ln) * dist];
+    }
+    var midA = [(s[0] + e[0]) / 2, (s[1] + e[1]) / 2];
+    var midB = [(sb[0] + eb[0]) / 2, (sb[1] + eb[1]) / 2];
+    return {
+      A: replaceFacingArc(ringA, s, e, arcA, nudge(midA, yellow, 2)),
+      B: replaceFacingArc(ringB, sb, eb, arcB, nudge(midB, yellow, 2)),
+    };
+  }
   function vectorDoodle(target, pts) {
     var p = null;
     paths().forEach(function (pp) {
@@ -2619,12 +2855,68 @@
     var line = pts.map(function (pt) {
       return [pt.x, pt.y];
     });
-    if (line.length < 2) return false;
+    if (line.length < 2) {
+      lastPenEx = { why: "line_short", n: line.length };
+      return false;
+    }
+    var locs = { in: 0, on: 0, out: 0 };
+    var maxOut = 0;
+    for (var li = 0; li < line.length; li++) {
+      var lk = penLoc(line[li], ring);
+      locs[lk] = (locs[lk] || 0) + 1;
+      if (lk === "out") {
+        var dd = distToRing(line[li], ring);
+        if (dd > maxOut) maxOut = dd;
+      }
+    }
     var ex = extractExcursion(line, ring);
+    lastPenEx = lastPenEx || {};
+    lastPenEx.locs = locs;
+    lastPenEx.maxOut = Math.round(maxOut * 10) / 10;
+    lastPenEx.neigh = neighbors.length;
     if (!ex) return false;
     var grown = growMid(ex.mid, ring, neighbors, SEAM_GAP, PEN_FACE);
+    var nSeam = 0,
+      nBay = 0,
+      nVoid = 0,
+      peakDrawn = 0,
+      peakKept = 0;
+    var interior = penCentroid(ring);
+    for (var gi = 1; gi < ex.mid.length - 1; gi++) {
+      var gp = ex.mid[gi];
+      var gQ = closestOnRingIdx(gp, ring);
+      var drawn0 = Math.hypot(gp[0] - gQ.x, gp[1] - gQ.y);
+      if (drawn0 > peakDrawn) peakDrawn = drawn0;
+      var gk;
+      if (neighbors.length) {
+        var gnQ = closestOnAnyRing([gQ.x, gQ.y], neighbors);
+        if (gnQ && gnQ.d <= PEN_FACE) gk = "seam";
+      }
+      if (!gk) {
+        var gsp = penCross(ex.S, ex.E, gp);
+        var gsi = penCross(ex.S, ex.E, interior);
+        gk =
+          Math.abs(gsp) >= 1e-8 && gsp > 0 === gsi > 0 ? "bay" : "void";
+      }
+      if (gk === "seam") nSeam++;
+      else if (gk === "bay") nBay++;
+      else nVoid++;
+      var kept = grown[gi];
+      if (kept) {
+        var kd = Math.hypot(kept[0] - gQ.x, kept[1] - gQ.y);
+        if (kd > peakKept) peakKept = kd;
+      }
+    }
+    lastPenEx.nSeam = nSeam;
+    lastPenEx.nBay = nBay;
+    lastPenEx.nVoid = nVoid;
+    lastPenEx.peakDrawn = Math.round(peakDrawn * 10) / 10;
+    lastPenEx.peakKept = Math.round(peakKept * 10) / 10;
     var cand = assembleRing(ring, ex.S, ex.E, grown);
-    if (!cand) return false;
+    if (!cand) {
+      lastPenEx.why = lastPenEx.why === "ok" ? "assemble_fail" : lastPenEx.why;
+      return false;
+    }
     var newRings = rings.slice();
     newRings[oi] = cand;
     p.setAttribute("d", ringsToDFine(newRings));
@@ -2660,7 +2952,9 @@
     var d0 = p.getAttribute("d");
     var ok = vectorDoodle(target, pts);
     ctx.clearRect(0, 0, W, H);
-    if (ok && p.getAttribute("d") !== d0) {
+    var d1 = p.getAttribute("d");
+    var applied = !!(ok && d1 !== d0);
+    if (applied) {
       buildLayers();
       document.querySelectorAll(".layer").forEach(function (el) {
         el.classList.toggle(
@@ -2672,6 +2966,18 @@
     } else {
       discardLastUndo();
     }
+    var ptsOut = pts.map(function (pt) {
+      return [Math.round(pt.x * 10) / 10, Math.round(pt.y * 10) / 10];
+    });
+    penLog({
+      type: "stroke",
+      target: target,
+      applied: applied,
+      why: (lastPenEx && lastPenEx.why) || (ok ? "unchanged" : "fail"),
+      n: pts.length,
+      pts: ptsOut,
+      diag: lastPenEx,
+    });
   }
 
   function nextLabelId() {
@@ -2700,6 +3006,412 @@
       e.stopPropagation();
       selectDistrict(p.getAttribute("data-name"), e.shiftKey);
     });
+  }
+
+  function isWaterPath(p) {
+    return !!(p && p.closest && p.closest("#water"));
+  }
+  function districtPaths() {
+    return paths().filter(function (p) {
+      return pathVisible(p) && !isWaterPath(p);
+    });
+  }
+  function pathRing(p) {
+    if (!p) return null;
+    var rings = parseD(p.getAttribute("d"));
+    if (!rings.length) return null;
+    return stripClosed(rings[largestRingIx(rings)]);
+  }
+  function pinHitR() {
+    return 10 / (pan.s || 1);
+  }
+  function hitSeamPin(p) {
+    var r = pinHitR();
+    var best = null,
+      bestD = r;
+    for (var i = 0; i < seamPins.length; i++) {
+      var pin = seamPins[i];
+      var d = Math.hypot(pin.x - p.x, pin.y - p.y);
+      if (d < bestD) {
+        bestD = d;
+        best = pin;
+      }
+    }
+    return best;
+  }
+  function nearestDistrictBorder(p, maxD) {
+    var list = districtPaths();
+    var best = null,
+      bestD = maxD == null ? 12 / (pan.s || 1) : maxD;
+    var xy = [p.x, p.y];
+    for (var i = 0; i < list.length; i++) {
+      var ring = pathRing(list[i]);
+      if (!ring || ring.length < 3) continue;
+      var c = closestOnRingIdx(xy, ring);
+      if (c && c.d < bestD) {
+        bestD = c.d;
+        best = {
+          path: list[i],
+          name: list[i].getAttribute("data-name"),
+          ring: ring,
+          x: c.x,
+          y: c.y,
+          d: c.d,
+        };
+      }
+    }
+    return best;
+  }
+  function neighborAcross(hit, maxD) {
+    maxD = maxD || PEN_FACE + 4;
+    var list = districtPaths();
+    var q = [hit.x, hit.y];
+    var best = null,
+      bestD = maxD;
+    for (var i = 0; i < list.length; i++) {
+      if (list[i] === hit.path) continue;
+      var ring = pathRing(list[i]);
+      if (!ring || ring.length < 3) continue;
+      var d = distToRing(q, ring);
+      if (d < bestD) {
+        bestD = d;
+        best = {
+          path: list[i],
+          name: list[i].getAttribute("data-name"),
+          ring: ring,
+          d: d,
+        };
+      }
+    }
+    return best;
+  }
+  function pickSeamAt(p) {
+    var hit = nearestDistrictBorder(p, 14 / (pan.s || 1));
+    if (!hit) return null;
+    var nb = neighborAcross(hit, PEN_FACE + 4);
+    if (!nb) return null;
+    return {
+      pathA: hit.path,
+      nameA: hit.name,
+      ringA: hit.ring,
+      pathB: nb.path,
+      nameB: nb.name,
+      ringB: nb.ring,
+      x: hit.x,
+      y: hit.y,
+    };
+  }
+  function addRedPin(hit) {
+    var r = pinHitR();
+    for (var i = 0; i < seamPins.length; i++) {
+      if (Math.hypot(seamPins[i].x - hit.x, seamPins[i].y - hit.y) < r)
+        return seamPins[i];
+    }
+    var pin = {
+      id: ++pinSeq,
+      kind: "red",
+      x: hit.x,
+      y: hit.y,
+      name: hit.name,
+    };
+    seamPins.push(pin);
+    return pin;
+  }
+  function removeSeamPin(pin) {
+    seamPins = seamPins.filter(function (x) {
+      return x.id !== pin.id;
+    });
+    if (ribbonDrag && ribbonDrag.yellow && ribbonDrag.yellow.id === pin.id)
+      cancelRibbon();
+  }
+  function yellowPin() {
+    for (var i = 0; i < seamPins.length; i++)
+      if (seamPins[i].kind === "yellow") return seamPins[i];
+    return null;
+  }
+  function setYellow(x, y, nameA, nameB) {
+    var ypin = yellowPin();
+    if (!ypin) {
+      ypin = { id: ++pinSeq, kind: "yellow", x: x, y: y };
+      seamPins.push(ypin);
+    }
+    ypin.x = x;
+    ypin.y = y;
+    ypin.nameA = nameA;
+    ypin.nameB = nameB;
+    return ypin;
+  }
+  function closestFacingRun(ringA, ringB, p) {
+    var runs = facingRuns(ringA, ringB, PEN_FACE);
+    if (!runs.length) return null;
+    var best = runs[0],
+      bestD = 1e18;
+    for (var i = 0; i < runs.length; i++) {
+      var run = runs[i];
+      var d = distToRing(p, run);
+      if (d < bestD) {
+        bestD = d;
+        best = run;
+      }
+    }
+    return best;
+  }
+  function seamAnchors(ringA, ringB, yellow, reds) {
+    var run = closestFacingRun(ringA, ringB, yellow);
+    if (!run || run.length < 2) return null;
+    var S = run[0],
+      E = run[run.length - 1];
+    var vx = E[0] - S[0],
+      vy = E[1] - S[1];
+    var l2 = vx * vx + vy * vy || 1;
+    function tOf(p) {
+      return ((p[0] - S[0]) * vx + (p[1] - S[1]) * vy) / l2;
+    }
+    var yt = tOf(yellow);
+    var left = S,
+      right = E,
+      lt = -1e9,
+      rt = 1e9;
+    for (var i = 0; i < reds.length; i++) {
+      var rp = [reds[i].x, reds[i].y];
+      if (distToRing(rp, ringA) > 10 && distToRing(rp, ringB) > 10) continue;
+      if (distToRing(rp, ringB) > PEN_FACE + 8 && distToRing(rp, ringA) > PEN_FACE + 8)
+        continue;
+      var t = tOf(rp);
+      if (t <= yt && t > lt) {
+        lt = t;
+        left = rp;
+      }
+      if (t >= yt && t < rt) {
+        rt = t;
+        right = rp;
+      }
+    }
+    return { s: left, e: right };
+  }
+  function lockGrowSide(seam, yellow, origin) {
+    var a = seam.nameA,
+      b = seam.nameB;
+    if (target === a || target === b) {
+      return target === a
+        ? { grow: a, shrink: b, pathG: seam.pathA, pathS: seam.pathB }
+        : { grow: b, shrink: a, pathG: seam.pathB, pathS: seam.pathA };
+    }
+    var ox = origin ? origin[0] : yellow[0];
+    var oy = origin ? origin[1] : yellow[1];
+    var vx = yellow[0] - ox,
+      vy = yellow[1] - oy;
+    var cA = penCentroid(seam.ringA),
+      cB = penCentroid(seam.ringB);
+    if (Math.hypot(vx, vy) < 1) {
+      var dA = Math.hypot(yellow[0] - cA[0], yellow[1] - cA[1]);
+      var dB = Math.hypot(yellow[0] - cB[0], yellow[1] - cB[1]);
+      if (dA > dB)
+        return { grow: a, shrink: b, pathG: seam.pathA, pathS: seam.pathB };
+      return { grow: b, shrink: a, pathG: seam.pathB, pathS: seam.pathA };
+    }
+    var sA = (cA[0] - ox) * vx + (cA[1] - oy) * vy;
+    var sB = (cB[0] - ox) * vx + (cB[1] - oy) * vy;
+    if (sA > sB)
+      return { grow: b, shrink: a, pathG: seam.pathB, pathS: seam.pathA };
+    return { grow: a, shrink: b, pathG: seam.pathA, pathS: seam.pathB };
+  }
+  function ensurePinsSvg() {
+    var s = document.getElementById("pins");
+    if (s) return s;
+    if (!stage) return null;
+    s = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    s.setAttribute("id", "pins");
+    stage.appendChild(s);
+    setPinsSize();
+    return s;
+  }
+  function setPinsSize() {
+    var s = document.getElementById("pins");
+    if (!s) return;
+    s.setAttribute("viewBox", "0 0 " + W + " " + H);
+    s.setAttribute("width", String(W));
+    s.setAttribute("height", String(H));
+  }
+  function renderPins() {
+    var s = ensurePinsSvg();
+    if (!s) return;
+    setPinsSize();
+    var inv = pan.s ? 1 / pan.s : 1;
+    var html = "";
+    if (ribbonDrag && ribbonDrag.s && ribbonDrag.e) {
+      html +=
+        '<line class="mouth" x1="' +
+        ribbonDrag.s[0] +
+        '" y1="' +
+        ribbonDrag.s[1] +
+        '" x2="' +
+        ribbonDrag.e[0] +
+        '" y2="' +
+        ribbonDrag.e[1] +
+        '" vector-effect="non-scaling-stroke"/>';
+      function ghost(pt) {
+        return (
+          '<g transform="translate(' +
+          pt[0] +
+          "," +
+          pt[1] +
+          ") scale(" +
+          inv.toFixed(5) +
+          ')"><circle class="pin ghost" r="4.5"/></g>'
+        );
+      }
+      html += ghost(ribbonDrag.s) + ghost(ribbonDrag.e);
+    }
+    for (var i = 0; i < seamPins.length; i++) {
+      var pin = seamPins[i];
+      html +=
+        '<g transform="translate(' +
+        pin.x +
+        "," +
+        pin.y +
+        ") scale(" +
+        inv.toFixed(5) +
+        ')"><circle class="pin ' +
+        pin.kind +
+        '" r="5"/></g>';
+    }
+    s.innerHTML = html;
+  }
+  function cancelRibbon() {
+    if (!ribbonDrag) return;
+    if (ribbonDrag.pathG)
+      ribbonDrag.pathG.setAttribute("d", ribbonDrag.dG);
+    if (ribbonDrag.pathS)
+      ribbonDrag.pathS.setAttribute("d", ribbonDrag.dS);
+    if (ribbonDrag.snapped) discardLastUndo();
+    ribbonDrag = null;
+    renderPins();
+  }
+  function applyRibbonFrame(yellow) {
+    if (!ribbonDrag || !ribbonDrag.s || !ribbonDrag.e) return false;
+    var out = deformPair(
+      ribbonDrag.ringG,
+      ribbonDrag.ringS,
+      ribbonDrag.s,
+      ribbonDrag.e,
+      yellow,
+      SEAM_GAP
+    );
+    if (!out.A || !out.B) return false;
+    var a0 = Math.abs(signedArea(ribbonDrag.ringG));
+    var b0 = Math.abs(signedArea(ribbonDrag.ringS));
+    if (Math.abs(signedArea(out.A)) < a0 * 0.45) return false;
+    if (Math.abs(signedArea(out.B)) < b0 * 0.45) return false;
+    var ringsG = parseD(ribbonDrag.dG);
+    var ringsS = parseD(ribbonDrag.dS);
+    ringsG[largestRingIx(ringsG)] = out.A;
+    ringsS[largestRingIx(ringsS)] = out.B;
+    ribbonDrag.pathG.setAttribute("d", ringsToDFine(ringsG));
+    ribbonDrag.pathS.setAttribute("d", ringsToDFine(ringsS));
+    return true;
+  }
+  function beginRibbonDrag(e, seam, pt, originPt) {
+    if (!seam) return;
+    var yellow = [pt.x, pt.y];
+    var origin = originPt
+      ? [originPt.x, originPt.y]
+      : [seam.x, seam.y];
+    var side = lockGrowSide(seam, yellow, origin);
+    var ringG = pathRing(side.pathG);
+    var ringS = pathRing(side.pathS);
+    if (!ringG || !ringS) return;
+    ignoreClicksUntil = Date.now() + 800;
+    ribbonDrag = {
+      pathG: side.pathG,
+      pathS: side.pathS,
+      dG: side.pathG.getAttribute("d"),
+      dS: side.pathS.getAttribute("d"),
+      ringG: ringG,
+      ringS: ringS,
+      nameG: side.grow,
+      nameS: side.shrink,
+      side: side,
+      snapped: false,
+    };
+    var reds = seamPins.filter(function (p) {
+      return p.kind === "red";
+    });
+    var ends = seamAnchors(ringG, ringS, yellow, reds);
+    if (!ends) {
+      ribbonDrag = null;
+      if (hint) hint.textContent = "это не шов — внешний край не тянем";
+      return;
+    }
+    ribbonDrag.s = ends.s;
+    ribbonDrag.e = ends.e;
+    var ypin = setYellow(pt.x, pt.y, side.grow, side.shrink);
+    ribbonDrag.yellow = ypin;
+    snapshotPaths("шов · " + short(side.grow));
+    ribbonDrag.snapped = true;
+    if (!applyRibbonFrame(yellow)) {
+      discardLastUndo();
+      ribbonDrag = null;
+      if (hint) hint.textContent = "это не шов — внешний край не тянем";
+      renderPins();
+      return;
+    }
+    try {
+      viewport.setPointerCapture(e.pointerId);
+    } catch (err) {}
+    if (target !== side.grow) selectDistrict(side.grow, false);
+    if (hint)
+      hint.textContent =
+        "тянем шов → " + short(side.grow) + " растёт, " + short(side.shrink) + " худеет";
+    renderPins();
+  }
+  function beginRibbonFromPin(e, pin) {
+    var p = { x: pin.x, y: pin.y };
+    var seam = pickSeamAt(p);
+    if (!seam && pin.nameA && pin.nameB) {
+      var pA = null,
+        pB = null;
+      districtPaths().forEach(function (pp) {
+        var n = pp.getAttribute("data-name");
+        if (n === pin.nameA) pA = pp;
+        if (n === pin.nameB) pB = pp;
+      });
+      if (pA && pB)
+        seam = {
+          pathA: pA,
+          nameA: pin.nameA,
+          ringA: pathRing(pA),
+          pathB: pB,
+          nameB: pin.nameB,
+          ringB: pathRing(pB),
+          x: pin.x,
+          y: pin.y,
+        };
+    }
+    if (!seam) return;
+    beginRibbonDrag(e, seam, p);
+  }
+  function moveRibbon(e) {
+    if (!ribbonDrag) return;
+    var pt = pos(e);
+    setYellow(pt.x, pt.y, ribbonDrag.nameG, ribbonDrag.nameS);
+    applyRibbonFrame([pt.x, pt.y]);
+    renderPins();
+  }
+  function endRibbon(e) {
+    if (!ribbonDrag) return;
+    if (e) moveRibbon(e);
+    var g = ribbonDrag.nameG,
+      s = ribbonDrag.nameS;
+    ribbonDrag = null;
+    ignoreClicksUntil = Date.now() + 400;
+    buildLabels();
+    buildLayers();
+    if (hint)
+      hint.textContent =
+        "шов сдвинут · " + short(g) + " / " + short(s);
+    renderPins();
+    scheduleSave();
   }
 
   function applyVoid(kind) {
@@ -4015,14 +4727,6 @@
     if (!target && hint)
       hint.textContent = "сначала район в слоях — карандаш отдаёт ему землю";
   };
-  document.getElementById("btn-erase").onclick = function () {
-    setMode("erase");
-  };
-  var knifeBtn = document.getElementById("btn-knife");
-  if (knifeBtn)
-    knifeBtn.onclick = function () {
-      setMode("knife");
-    };
   var rulerBtn = document.getElementById("btn-ruler");
   if (rulerBtn)
     rulerBtn.onclick = function () {
@@ -4201,6 +4905,7 @@ var magnetBtn = document.getElementById("btn-magnet");
     s.setAttribute("viewBox", "0 0 " + W + " " + H);
     s.setAttribute("width", String(W));
     s.setAttribute("height", String(H));
+    setPinsSize();
   }
   function isCoast(x, y) {
     x = x | 0;
@@ -4366,7 +5071,7 @@ var magnetBtn = document.getElementById("btn-magnet");
     box.innerHTML = String(svgText || "").trim();
     var neu = box.querySelector("svg");
     if (!neu || !stage) return false;
-    var old = stage.querySelector("svg:not(#ruler)");
+    var old = stage.querySelector("svg:not(#ruler):not(#doodle):not(#pins)");
     if (old) old.replaceWith(neu);
     else stage.insertBefore(neu, canvas);
     svg = neu;
@@ -4379,6 +5084,11 @@ var magnetBtn = document.getElementById("btn-magnet");
     stage.style.height = H + "px";
     setRulerSize();
     clearRuler();
+    seamPins = [];
+    pinSeq = 0;
+    pendingRibbon = null;
+    ribbonDrag = null;
+    renderPins();
     labels = new Uint16Array(W * H);
     undoStack = [];
     redoStack = [];
@@ -5525,4 +6235,11 @@ var magnetBtn = document.getElementById("btn-magnet");
   } else {
     showAuth("открой через http://127.0.0.1:8765");
   }
+  var penBar = document.createElement("div");
+  penBar.id = "pen-log-bar";
+  penBar.textContent =
+    "лог штрихов включён · чертите, Ctrl+Z сколько нужно, потом напишите «готово»";
+  penBar.style.cssText =
+    "position:fixed;left:12px;bottom:10px;z-index:80;background:#2b2317;color:#f2e8d5;font:12px/1.35 sans-serif;padding:7px 11px;max-width:72vw;pointer-events:none;";
+  document.body.appendChild(penBar);
 })();

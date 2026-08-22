@@ -225,6 +225,55 @@ def test_assemble_keeps_the_large_body() -> None:
         fail("assembled the ear instead of the body: %s vs %s" % (a1, a0))
 
 
+def test_quadratic_hits_handle() -> None:
+    s, y, e = (0.0, 0.0), (10.0, 20.0), (20.0, 0.0)
+    pts = pg.quadratic(s, y, e, 20)
+    if not close(pts[0], s) or not close(pts[-1], e):
+        fail("quad ends")
+    mid = pts[len(pts) // 2]
+    if abs(mid[1] - 10.0) > 2:
+        fail("quad mid height %s" % (mid,))
+
+
+def test_deform_pair_transfers_area() -> None:
+    a = square()
+    b = [(108.0, 0.0), (200.0, 0.0), (200.0, 100.0), (108.0, 100.0)]
+    s, e = (100.0, 30.0), (100.0, 70.0)
+    yellow = (115.0, 50.0)
+    a2, b2 = pg.deform_pair(a, b, s, e, yellow, gap=5.0)
+    if a2 is None or b2 is None:
+        fail("deform_pair None")
+    da = abs(pg.signed_area(a2)) - abs(pg.signed_area(a))
+    db = abs(pg.signed_area(b2)) - abs(pg.signed_area(b))
+    if da <= 5:
+        fail("A should grow, da=%s" % da)
+    if db >= -5:
+        fail("B should shrink, db=%s" % db)
+    # no point of A closer than ~4px to B
+    min_d = 1e9
+    for p in a2:
+        q, _, _, d = pg.closest_on_ring(p, b2)
+        if d < min_d:
+            min_d = d
+    if min_d < 4.0:
+        fail("gap collapsed to %s" % min_d)
+
+
+def test_deform_pair_deep_handle_keeps_body() -> None:
+    a = square()
+    b = [(108.0, 0.0), (200.0, 0.0), (200.0, 100.0), (108.0, 100.0)]
+    s, e = (100.0, 30.0), (100.0, 70.0)
+    yellow = (170.0, 50.0)
+    a2, b2 = pg.deform_pair(a, b, s, e, yellow, gap=5.0)
+    if a2 is None or b2 is None:
+        fail("deform_pair None")
+    a0, b0 = abs(pg.signed_area(a)), abs(pg.signed_area(b))
+    if abs(pg.signed_area(b2)) < b0 * 0.5:
+        fail("B collapsed: %s vs %s" % (abs(pg.signed_area(b2)), b0))
+    if abs(pg.signed_area(a2)) < a0 * 0.5:
+        fail("A collapsed: %s vs %s" % (abs(pg.signed_area(a2)), a0))
+
+
 def main() -> None:
     test_inside_tails_are_dropped()
     test_substrate_tails_are_dropped()
@@ -238,7 +287,10 @@ def main() -> None:
     test_void_outward_adds_zero()
     test_bay_keeps_drawn_fill()
     test_assemble_keeps_the_large_body()
-    print("OK pen_geom excursion + grow")
+    test_quadratic_hits_handle()
+    test_deform_pair_transfers_area()
+    test_deform_pair_deep_handle_keeps_body()
+    print("OK pen_geom excursion + grow + deform")
 
 
 if __name__ == "__main__":
