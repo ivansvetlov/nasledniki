@@ -3172,6 +3172,93 @@
       ]);
     return out;
   }
+  function densifyOpen(pts, step) {
+    step = step || 2;
+    if (!pts || pts.length < 2) return pts ? pts.slice() : [];
+    var out = [pts[0]];
+    for (var i = 0; i + 1 < pts.length; i++) {
+      var a = pts[i],
+        b = pts[i + 1];
+      var d = Math.hypot(b[0] - a[0], b[1] - a[1]);
+      var n = Math.max(1, Math.round(d / step));
+      for (var k = 1; k <= n; k++) {
+        var t = k / n;
+        out.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]);
+      }
+    }
+    return out;
+  }
+  function pullWalk(walk, yellow) {
+    if (!walk || walk.length < 2) return walk ? walk.slice() : [];
+    var acc = [0];
+    for (var i = 1; i < walk.length; i++)
+      acc.push(
+        acc[i - 1] +
+          Math.hypot(walk[i][0] - walk[i - 1][0], walk[i][1] - walk[i - 1][1])
+      );
+    var L = acc[acc.length - 1] || 1;
+    var tHit = 0.5,
+      best = 1e9;
+    for (var i = 0; i + 1 < walk.length; i++) {
+      var c = closestOnSeg(yellow, walk[i], walk[i + 1]);
+      if (c.d < best) {
+        best = c.d;
+        var seg =
+          Math.hypot(
+            walk[i + 1][0] - walk[i][0],
+            walk[i + 1][1] - walk[i][1]
+          ) || 1;
+        tHit = (acc[i] + c.t * seg) / L;
+      }
+    }
+    if (tHit < 0.02) tHit = 0.02;
+    if (tHit > 0.98) tHit = 0.98;
+    var hitQ = closestOnOpen(yellow, walk).q;
+    var vx = yellow[0] - hitQ[0];
+    var vy = yellow[1] - hitQ[1];
+    var out = [];
+    for (var i = 0; i < walk.length; i++) {
+      var t = acc[i] / L;
+      var w = t <= tHit ? t / tHit : (1 - t) / (1 - tHit);
+      w = w * w * (3 - 2 * w);
+      out.push([walk[i][0] + vx * w, walk[i][1] + vy * w]);
+    }
+    out[0] = [walk[0][0], walk[0][1]];
+    out[out.length - 1] = [
+      walk[walk.length - 1][0],
+      walk[walk.length - 1][1],
+    ];
+    return out;
+  }
+  function closestOnPoly(p, pts, closed) {
+    var best = { q: pts[0], d: 1e9 };
+    var n = pts.length;
+    var last = closed ? n : n - 1;
+    for (var i = 0; i < last; i++) {
+      var c = closestOnSeg(p, pts[i], pts[(i + 1) % n]);
+      if (c.d < best.d) best = { q: [c.x, c.y], d: c.d };
+    }
+    return best;
+  }
+  function pushOff(pts, other, gap, asRing) {
+    if (!pts || pts.length < 2 || !other || other.length < 2) return pts;
+    var out = pts.slice();
+    var ring = asRing ? stripClosed(other) : other;
+    for (var i = 1; i < out.length - 1; i++) {
+      var c = closestOnPoly(out[i], ring, !!asRing);
+      if (c.d < 1e-6) continue;
+      var inside = asRing && pointInRing(out[i], ring);
+      if (!inside && c.d + 1e-6 >= gap) continue;
+      var ux = (out[i][0] - c.q[0]) / c.d;
+      var uy = (out[i][1] - c.q[1]) / c.d;
+      if (inside) {
+        ux = -ux;
+        uy = -uy;
+      }
+      out[i] = [c.q[0] + ux * gap, c.q[1] + uy * gap];
+    }
+    return out;
+  }
   function walkBack(ring, iFrom, iTo) {
     var pts = [];
     var n = ring.length;
@@ -3233,16 +3320,18 @@
     if (cand.length < 4) return null;
     return cand;
   }
-  function deformPair(ringA, ringB, s, e, yellow, gap) {
+  function deformPair(ringA, ringB, s, e, yellow, gap, walkA) {
     gap = gap == null ? SEAM_GAP : gap;
-    var mid = [(s[0] + e[0]) / 2, (s[1] + e[1]) / 2];
-    var ctrl = [2 * yellow[0] - mid[0], 2 * yellow[1] - mid[1]];
-    var arcA = quadraticPts(s, ctrl, e, 28);
+    var base =
+      walkA && walkA.length >= 2
+        ? densifyOpen(walkA, 2)
+        : densifyOpen(quadraticPts(s, yellow, e, 28), 2);
+    var arcA = pullWalk(base, yellow);
     var arcB = offsetOpen(arcA, gap, penCentroid(ringB));
-    var sb = closestOnRing(s, ringB);
-    var eb = closestOnRing(e, ringB);
-    arcB[0] = sb;
-    arcB[arcB.length - 1] = eb;
+    arcB = pushOff(arcB, arcA, gap, false);
+    arcA = pushOff(arcA, arcB, gap, false);
+    var sb = arcB[0];
+    var eb = arcB[arcB.length - 1];
     function nudge(p, toward, dist) {
       var vx = toward[0] - p[0],
         vy = toward[1] - p[1];
@@ -3251,10 +3340,34 @@
     }
     var midA = [(s[0] + e[0]) / 2, (s[1] + e[1]) / 2];
     var midB = [(sb[0] + eb[0]) / 2, (sb[1] + eb[1]) / 2];
-    return {
-      A: replaceFacingArc(ringA, s, e, arcA, nudge(midA, yellow, 2)),
-      B: replaceFacingArc(ringB, sb, eb, arcB, nudge(midB, yellow, 2)),
-    };
+    var a2 = replaceFacingArc(ringA, s, e, arcA, nudge(midA, yellow, 2));
+    var b2 = replaceFacingArc(ringB, sb, eb, arcB, nudge(midB, yellow, 2));
+    if (a2 && b2) {
+      a2 = clampRingGap(a2, b2, s, e, gap);
+      b2 = clampRingGap(b2, a2, sb, eb, gap);
+    }
+    return { A: a2, B: b2 };
+  }
+  function clampRingGap(ring, other, s, e, gap) {
+    var out = ring.slice();
+    var o = stripClosed(other);
+    for (var i = 0; i < out.length; i++) {
+      var p = out[i];
+      if (Math.hypot(p[0] - s[0], p[1] - s[1]) < 0.6) continue;
+      if (Math.hypot(p[0] - e[0], p[1] - e[1]) < 0.6) continue;
+      var c = closestOnPoly(p, o, true);
+      if (c.d < 1e-6) continue;
+      var inside = pointInRing(p, o);
+      if (!inside && c.d + 1e-6 >= gap) continue;
+      var ux = (p[0] - c.q[0]) / c.d;
+      var uy = (p[1] - c.q[1]) / c.d;
+      if (inside) {
+        ux = -ux;
+        uy = -uy;
+      }
+      out[i] = [c.q[0] + ux * gap, c.q[1] + uy * gap];
+    }
+    return out;
   }
   function vectorDoodle(target, pts) {
     var p = null;
@@ -3792,7 +3905,8 @@
       ribbonDrag.s,
       ribbonDrag.e,
       yellow,
-      SEAM_GAP
+      SEAM_GAP,
+      ribbonDrag.walk
     );
     if (!out.A || !out.B) return false;
     var a0 = Math.abs(signedArea(ribbonDrag.ringG));
@@ -3862,6 +3976,7 @@
       snapped: false,
       s: zone.s,
       e: zone.e,
+      walk: zone.walk || walkShort(ringG, zone.s, zone.e),
     };
     var onBody = closestOnOpen(origin, zone.walk);
     var ypin = setYellow(onBody.q[0], onBody.q[1], zone.name, nb.name);

@@ -427,6 +427,104 @@ def _nudge(p: Point, toward: Point, dist: float = 2.0) -> Point:
     return (p[0] + vx / ln * dist, p[1] + vy / ln * dist)
 
 
+def densify_open(pts: list[Point], step: float = 2.0) -> list[Point]:
+    if len(pts) < 2:
+        return list(pts)
+    out: list[Point] = [pts[0]]
+    for i in range(len(pts) - 1):
+        a, b = pts[i], pts[i + 1]
+        d = math.hypot(b[0] - a[0], b[1] - a[1])
+        n = max(1, int(round(d / step)))
+        for k in range(1, n + 1):
+            t = k / n
+            out.append((a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t))
+    return out
+
+
+def pull_walk(walk: list[Point], yellow: Point) -> list[Point]:
+    if len(walk) < 2:
+        return list(walk)
+    acc = [0.0]
+    for i in range(1, len(walk)):
+        acc.append(
+            acc[-1]
+            + math.hypot(walk[i][0] - walk[i - 1][0], walk[i][1] - walk[i - 1][1])
+        )
+    L = acc[-1] or 1.0
+    t_hit = 0.5
+    best = 1e18
+    for i in range(len(walk) - 1):
+        q, t, d = closest_on_seg(yellow, walk[i], walk[i + 1])
+        if d < best:
+            best = d
+            seg = math.hypot(walk[i + 1][0] - walk[i][0], walk[i + 1][1] - walk[i][1]) or 1.0
+            t_hit = (acc[i] + t * seg) / L
+    t_hit = min(0.98, max(0.02, t_hit))
+    hit, _, _, _ = closest_on_ring(yellow, walk)
+    vx, vy = yellow[0] - hit[0], yellow[1] - hit[1]
+    out: list[Point] = []
+    for i, p in enumerate(walk):
+        t = acc[i] / L
+        w = t / t_hit if t <= t_hit else (1.0 - t) / (1.0 - t_hit)
+        w = w * w * (3.0 - 2.0 * w)
+        out.append((p[0] + vx * w, p[1] + vy * w))
+    out[0] = walk[0]
+    out[-1] = walk[-1]
+    return out
+
+
+def push_off(
+    pts: list[Point], other: list[Point], gap: float, as_ring: bool = False
+) -> list[Point]:
+    if len(pts) < 3 or len(other) < 2:
+        return list(pts)
+    ring = _closed(other) if as_ring else other
+    out = list(pts)
+    n = len(ring)
+    last = n if as_ring else n - 1
+    for i in range(1, len(out) - 1):
+        best_q, best_d = ring[0], 1e18
+        for j in range(last):
+            q, _, d = closest_on_seg(out[i], ring[j], ring[(j + 1) % n])
+            if d < best_d:
+                best_d = d
+                best_q = q
+        if best_d < 1e-6:
+            continue
+        inside = as_ring and point_in_ring(out[i], ring)
+        if not inside and best_d + 1e-6 >= gap:
+            continue
+        ux = (out[i][0] - best_q[0]) / best_d
+        uy = (out[i][1] - best_q[1]) / best_d
+        if inside:
+            ux, uy = -ux, -uy
+        out[i] = (best_q[0] + ux * gap, best_q[1] + uy * gap)
+    return out
+
+
+def _clamp_ring_gap(
+    ring: Ring, other: Ring, s: Point, e: Point, gap: float
+) -> Ring:
+    out = list(ring)
+    for i, p in enumerate(out):
+        if math.hypot(p[0] - s[0], p[1] - s[1]) < 0.6:
+            continue
+        if math.hypot(p[0] - e[0], p[1] - e[1]) < 0.6:
+            continue
+        q, _, _, d = closest_on_ring(p, other)
+        if d < 1e-6:
+            continue
+        inside = point_in_ring(p, other)
+        if not inside and d + 1e-6 >= gap:
+            continue
+        ux = (p[0] - q[0]) / d
+        uy = (p[1] - q[1]) / d
+        if inside:
+            ux, uy = -ux, -uy
+        out[i] = (q[0] + ux * gap, q[1] + uy * gap)
+    return out
+
+
 def deform_pair(
     ring_a: Ring,
     ring_b: Ring,
@@ -434,18 +532,21 @@ def deform_pair(
     e: Point,
     yellow: Point,
     gap: float = SEAM_GAP,
+    walk_a: Optional[list[Point]] = None,
 ) -> tuple[Optional[list[Point]], Optional[list[Point]]]:
-    arc_a = quadratic(s, yellow, e, 28)
-    toward_b = _centroid(ring_b)
-    arc_b = offset_open(arc_a, gap, toward_b)
-    sb, _, _, _ = closest_on_ring(s, ring_b)
-    eb, _, _, _ = closest_on_ring(e, ring_b)
-    arc_b[0] = sb
-    arc_b[-1] = eb
+    base = densify_open(walk_a if walk_a and len(walk_a) >= 2 else quadratic(s, yellow, e, 28), 2.0)
+    arc_a = pull_walk(base, yellow)
+    arc_b = offset_open(arc_a, gap, _centroid(ring_b))
+    arc_b = push_off(arc_b, arc_a, gap, False)
+    arc_a = push_off(arc_a, arc_b, gap, False)
+    sb, eb = arc_b[0], arc_b[-1]
     mid_a = ((s[0] + e[0]) / 2.0, (s[1] + e[1]) / 2.0)
     mid_b = ((sb[0] + eb[0]) / 2.0, (sb[1] + eb[1]) / 2.0)
     a2 = replace_facing_arc(ring_a, s, e, arc_a, _nudge(mid_a, yellow, 2.0))
     b2 = replace_facing_arc(ring_b, sb, eb, arc_b, _nudge(mid_b, yellow, 2.0))
+    if a2 and b2:
+        a2 = _clamp_ring_gap(a2, b2, s, e, gap)
+        b2 = _clamp_ring_gap(b2, a2, sb, eb, gap)
     return a2, b2
 
 

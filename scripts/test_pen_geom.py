@@ -274,6 +274,37 @@ def test_deform_pair_deep_handle_keeps_body() -> None:
         fail("A collapsed: %s vs %s" % (abs(pg.signed_area(a2)), a0))
 
 
+def test_deform_pair_keeps_gap_at_nose() -> None:
+    a = [
+        (180.0, 300.0),
+        (198.0, 328.0),
+        (200.2, 329.2),
+        (201.0, 334.0),
+        (220.0, 360.0),
+        (180.0, 360.0),
+    ]
+    b = [
+        (203.1, 328.3),
+        (240.0, 330.0),
+        (240.0, 380.0),
+        (205.0, 380.0),
+        (204.0, 340.0),
+    ]
+    s, e = (198.0, 328.0), (201.0, 334.0)
+    yellow = (206.0, 328.0)
+    walk = [s, (200.2, 329.2), e]
+    a2, b2 = pg.deform_pair(a, b, s, e, yellow, gap=5.0, walk_a=walk)
+    if a2 is None or b2 is None:
+        fail("deform_pair None")
+    min_d = 1e9
+    for p in a2:
+        _, _, _, d = pg.closest_on_ring(p, b2)
+        if d < min_d:
+            min_d = d
+    if min_d < 4.5:
+        fail("nose collapsed gap to %s" % min_d)
+
+
 def main() -> None:
     test_inside_tails_are_dropped()
     test_substrate_tails_are_dropped()
@@ -290,6 +321,7 @@ def main() -> None:
     test_quadratic_hits_handle()
     test_deform_pair_transfers_area()
     test_deform_pair_deep_handle_keeps_body()
+    test_deform_pair_keeps_gap_at_nose()
     print("OK pen_geom excursion + grow + deform")
 
 
