@@ -725,7 +725,7 @@ def write_bench(raw_svg: str, report: dict, hist: list[dict], paths: list[dict])
     </div>
     <div id="cross"><div class="h"></div><div class="v"></div></div>
     <div id="xy"></div>
-    <div id="hint">ПКМ на шов — красный якорь, ЛКМ — тянуть жёлтую, ПКМ по точке — удалить</div>
+    <div id="hint">ПКМ — красная на границе; ЛКМ между двумя соседними — жёлтая; ПКМ по точке — удалить</div>
     <div class="dock">
       <button type="button" id="btn-pick" class="on" title="выбор · клавиша V (любая раскладка)">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M4 3l8 18 2-7 7-2z"/></svg>
