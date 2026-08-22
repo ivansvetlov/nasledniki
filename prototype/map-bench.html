@@ -3281,27 +3281,18 @@
       iE = cE.idx;
     var cand;
     if (iS === iE) {
-      var around = r.slice(iS + 1).concat(r.slice(0, iS + 1));
-      var mx = (s[0] + e[0]) / 2,
-        my = (s[1] + e[1]) / 2;
-      var dShort = Math.hypot(mx - near[0], my - near[1]);
-      var body = around.length ? around : r;
-      var cx = 0,
-        cy = 0;
-      for (var i = 0; i < body.length; i++) {
-        cx += body[i][0];
-        cy += body[i][1];
-      }
-      cx /= body.length || 1;
-      cy /= body.length || 1;
-      var dLong = Math.hypot(cx - near[0], cy - near[1]);
-      if (dShort > dLong) cand = newPts.slice();
-      else if (
-        Math.abs(penCross(s, e, near)) >= 1e-8 &&
-        penCross(s, e, near) > 0 === penCross(s, e, penCentroid(r)) > 0
+      var nR = r.length;
+      var iN = (iS + 1) % nR;
+      var around;
+      if (
+        Math.hypot(e[0] - r[iS][0], e[1] - r[iS][1]) <=
+        Math.hypot(e[0] - r[iN][0], e[1] - r[iN][1])
       )
-        cand = newPts.concat(around.slice().reverse());
-      else cand = newPts.concat(around);
+        around = [r[iS]].concat(walkBack(r, iS, iN), [r[iN]]);
+      else around = [r[iN]].concat(walkVerts(r, iN, iS), [r[iS]]);
+      cand = newPts.concat(around);
+      var orig0 = signedArea(r);
+      if (signedArea(cand) >= 0 !== orig0 >= 0) cand = cand.slice().reverse();
     } else {
       var arcF = [s].concat(walkVerts(r, iS, iE), [e]);
       var arcB = [s].concat(walkBack(r, iS, iE), [e]);
@@ -3320,41 +3311,106 @@
     if (cand.length < 4) return null;
     return cand;
   }
+  function signedNormals(pts, toward) {
+    if (!pts || pts.length < 2) return [];
+    var nrms = [];
+    for (var i = 0; i < pts.length; i++) {
+      var a, b;
+      if (i === 0) {
+        a = pts[0];
+        b = pts[1];
+      } else if (i === pts.length - 1) {
+        a = pts[pts.length - 2];
+        b = pts[pts.length - 1];
+      } else {
+        a = pts[i - 1];
+        b = pts[i + 1];
+      }
+      var vx = b[0] - a[0],
+        vy = b[1] - a[1];
+      var ln = Math.hypot(vx, vy) || 1;
+      nrms.push([-vy / ln, vx / ln]);
+    }
+    var p0 = pts[(pts.length / 2) | 0];
+    var n0 = nrms[(nrms.length / 2) | 0];
+    var dpos = Math.hypot(p0[0] + n0[0] - toward[0], p0[1] + n0[1] - toward[1]);
+    var dneg = Math.hypot(p0[0] - n0[0] - toward[0], p0[1] - n0[1] - toward[1]);
+    var sgn = dpos < dneg ? 1 : -1;
+    return nrms.map(function (n) {
+      return [sgn * n[0], sgn * n[1]];
+    });
+  }
+  function blend01(t, edge) {
+    edge = edge == null ? 0.14 : edge;
+    if (edge <= 0) return 1;
+    var x = Math.min(t, 1 - t) / edge;
+    if (x <= 0) return 0;
+    if (x >= 1) return 1;
+    return x * x * (3 - 2 * x);
+  }
+  function buildMidline(arcA, ringB) {
+    if (!arcA || arcA.length < 2) return null;
+    var mid = [];
+    var halfs = [];
+    var far = 0;
+    for (var i = 0; i < arcA.length; i++) {
+      var q = closestOnRing(arcA[i], ringB);
+      var d = Math.hypot(arcA[i][0] - q[0], arcA[i][1] - q[1]);
+      mid.push([(arcA[i][0] + q[0]) * 0.5, (arcA[i][1] + q[1]) * 0.5]);
+      halfs.push(d * 0.5);
+      if (d > 14) far++;
+    }
+    if (far > Math.max(2, (arcA.length / 3) | 0)) return null;
+    return { mid: mid, halfs: halfs };
+  }
+  function emitFromMidline(mid, halfs, gap, towardA) {
+    var nrms = signedNormals(mid, towardA);
+    var n = mid.length;
+    var arcA = [];
+    var arcB = [];
+    var target = gap * 0.5;
+    for (var i = 0; i < n; i++) {
+      var t = n > 1 ? i / (n - 1) : 0;
+      var w = blend01(t);
+      var h0 = i < halfs.length ? halfs[i] : target;
+      var half = h0 * (1 - w) + target * w;
+      var nx = nrms[i][0],
+        ny = nrms[i][1];
+      arcA.push([mid[i][0] + nx * half, mid[i][1] + ny * half]);
+      arcB.push([mid[i][0] - nx * half, mid[i][1] - ny * half]);
+    }
+    return { A: arcA, B: arcB };
+  }
   function deformPair(ringA, ringB, s, e, yellow, gap, walkA) {
     gap = gap == null ? SEAM_GAP : gap;
-    var base =
-      walkA && walkA.length >= 2
-        ? densifyOpen(walkA, 2)
-        : densifyOpen(quadraticPts(s, yellow, e, 28), 2);
-    var arcA = pullWalk(base, yellow);
-    var arcB = offsetOpen(arcA, gap, penCentroid(ringB));
-    arcB = pushOff(arcB, arcA, gap, false);
-    arcA = pushOff(arcA, arcB, gap, false);
-    var sb = arcB[0];
-    var eb = arcB[arcB.length - 1];
-    function nudge(p, toward, dist) {
-      var vx = toward[0] - p[0],
-        vy = toward[1] - p[1];
-      var ln = Math.hypot(vx, vy) || 1;
-      return [p[0] + (vx / ln) * dist, p[1] + (vy / ln) * dist];
-    }
-    var midA = [(s[0] + e[0]) / 2, (s[1] + e[1]) / 2];
-    var midB = [(sb[0] + eb[0]) / 2, (sb[1] + eb[1]) / 2];
-    var a2 = replaceFacingArc(ringA, s, e, arcA, nudge(midA, yellow, 2));
-    var b2 = replaceFacingArc(ringB, sb, eb, arcB, nudge(midB, yellow, 2));
+    var walk =
+      walkA && walkA.length >= 2 ? walkA : walkShort(ringA, s, e);
+    var arc0 = densifyOpen(walk, 2);
+    var built = buildMidline(arc0, ringB);
+    if (!built) return { A: null, B: null };
+    var mid2 = pullWalk(built.mid, yellow);
+    var em = emitFromMidline(mid2, built.halfs, gap, penCentroid(ringA));
+    em.A[0] = s;
+    em.A[em.A.length - 1] = e;
+    var sb = closestOnRing(s, ringB);
+    var eb = closestOnRing(e, ringB);
+    em.B[0] = sb;
+    em.B[em.B.length - 1] = eb;
+    var a2 = replaceFacingArc(ringA, s, e, em.A, yellow);
+    var b2 = replaceFacingArc(ringB, sb, eb, em.B, yellow);
     if (a2 && b2) {
       a2 = clampRingGap(a2, b2, s, e, gap);
       b2 = clampRingGap(b2, a2, sb, eb, gap);
     }
-    return { A: a2, B: b2 };
+    return { A: a2, B: b2, mid: mid2 };
   }
   function clampRingGap(ring, other, s, e, gap) {
     var out = ring.slice();
     var o = stripClosed(other);
     for (var i = 0; i < out.length; i++) {
       var p = out[i];
-      if (Math.hypot(p[0] - s[0], p[1] - s[1]) < 0.6) continue;
-      if (Math.hypot(p[0] - e[0], p[1] - e[1]) < 0.6) continue;
+      if (Math.hypot(p[0] - s[0], p[1] - s[1]) < 8) continue;
+      if (Math.hypot(p[0] - e[0], p[1] - e[1]) < 8) continue;
       var c = closestOnPoly(p, o, true);
       if (c.d < 1e-6) continue;
       var inside = pointInRing(p, o);
@@ -3735,6 +3791,7 @@
     var cS = closestOnRingIdx(s, r);
     var cE = closestOnRingIdx(e, r);
     if (!cS || !cE) return [s, e];
+    if (cS.idx === cE.idx) return [s, e];
     var fwd = [s].concat(walkVerts(r, cS.idx, cE.idx), [e]);
     var bwd = [s].concat(walkBack(r, cS.idx, cE.idx), [e]);
     return polylineLen(fwd) <= polylineLen(bwd) ? fwd : bwd;
@@ -3890,6 +3947,56 @@
     ribbonDrag = null;
     renderPins();
   }
+  function waterRings() {
+    var g = svg.querySelector("#water");
+    if (!g) return [];
+    return Array.prototype.slice
+      .call(g.querySelectorAll("path"))
+      .map(function (p) {
+        var rr = parseD(p.getAttribute("d"));
+        if (!rr.length) return null;
+        return stripClosed(rr[largestRingIx(rr)]);
+      })
+      .filter(Boolean);
+  }
+  function nearbyBodyNames(p, maxD) {
+    var names = [];
+    districtPaths().forEach(function (pp) {
+      var ring = pathRing(pp);
+      if (ring && distToRing(p, ring) <= maxD)
+        names.push(pp.getAttribute("data-name"));
+    });
+    waterRings().forEach(function (ring) {
+      if (distToRing(p, ring) <= maxD) names.push("#water");
+    });
+    return names;
+  }
+  function walkHasJunction(walk, nameA, nameB) {
+    if (!walk || walk.length < 3) return false;
+    for (var i = 1; i + 1 < walk.length; i++) {
+      var near = nearbyBodyNames(walk[i], PEN_FACE);
+      var extra = 0;
+      var hasA = false,
+        hasB = false;
+      for (var k = 0; k < near.length; k++) {
+        if (near[k] === nameA) hasA = true;
+        else if (near[k] === nameB) hasB = true;
+        else extra++;
+      }
+      if (hasA && hasB && extra) return true;
+    }
+    return false;
+  }
+  function hitsWater(pts) {
+    var rings = waterRings();
+    if (!rings.length || !pts) return false;
+    for (var i = 1; i + 1 < pts.length; i++) {
+      for (var r = 0; r < rings.length; r++) {
+        if (pointInRing(pts[i], rings[r])) return true;
+      }
+    }
+    return false;
+  }
   function yellowOnGrowBody(cursor) {
     if (!ribbonDrag) return cursor;
     var ring = pathRing(ribbonDrag.pathG) || ribbonDrag.ringG;
@@ -3909,6 +4016,7 @@
       ribbonDrag.walk
     );
     if (!out.A || !out.B) return false;
+    if (hitsWater(out.A) || hitsWater(out.B)) return false;
     var a0 = Math.abs(signedArea(ribbonDrag.ringG));
     var b0 = Math.abs(signedArea(ribbonDrag.ringS));
     if (Math.abs(signedArea(out.A)) < a0 * 0.45) return false;
@@ -3958,6 +4066,12 @@
     );
     if (!nb || nb.name === zone.name) {
       if (hint) hint.textContent = "это не шов — внешний край не тянем";
+      return;
+    }
+    if (walkHasJunction(zone.walk, zone.name, nb.name)) {
+      if (hint)
+        hint.textContent =
+          "тройник внутри участка — красные до узла и после, не через него";
       return;
     }
     var ringG = zone.ring;

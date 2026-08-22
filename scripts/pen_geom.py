@@ -390,17 +390,18 @@ def replace_facing_arc(
     _, _, iS, _ = closest_on_ring(s, r)
     _, _, iE, _ = closest_on_ring(e, r)
     if iS == iE:
-        around = r[iS + 1 :] + r[: iS + 1]
-        mx, my = (s[0] + e[0]) / 2, (s[1] + e[1]) / 2
-        d_short = math.hypot(mx - near[0], my - near[1])
-        cx, cy = _centroid(around if around else r)
-        d_long = math.hypot(cx - near[0], cy - near[1])
-        if d_short > d_long:
-            cand = list(new_pts)
-        elif _same_side_as_interior(near, r, s, e):
-            cand = new_pts + list(reversed(around))
+        n = len(r)
+        i_n = (iS + 1) % n
+        if math.hypot(e[0] - r[iS][0], e[1] - r[iS][1]) <= math.hypot(
+            e[0] - r[i_n][0], e[1] - r[i_n][1]
+        ):
+            around = [r[iS]] + _walk_back(r, iS, i_n) + [r[i_n]]
         else:
-            cand = new_pts + around
+            around = [r[i_n]] + _walk_vertices(r, i_n, iS) + [r[iS]]
+        cand = new_pts + around
+        orig = signed_area(r)
+        if (signed_area(cand) >= 0) != (orig >= 0):
+            cand = list(reversed(cand))
     else:
         arc_f = [s] + _walk_vertices(r, iS, iE) + [e]
         arc_b = [s] + _walk_back(r, iS, iE) + [e]
@@ -507,9 +508,9 @@ def _clamp_ring_gap(
 ) -> Ring:
     out = list(ring)
     for i, p in enumerate(out):
-        if math.hypot(p[0] - s[0], p[1] - s[1]) < 0.6:
+        if math.hypot(p[0] - s[0], p[1] - s[1]) < 8:
             continue
-        if math.hypot(p[0] - e[0], p[1] - e[1]) < 0.6:
+        if math.hypot(p[0] - e[0], p[1] - e[1]) < 8:
             continue
         q, _, _, d = closest_on_ring(p, other)
         if d < 1e-6:
@@ -525,6 +526,98 @@ def _clamp_ring_gap(
     return out
 
 
+def walk_short(ring: Ring, s: Point, e: Point) -> list[Point]:
+    r = _closed(ring)
+    _, _, i_s, _ = closest_on_ring(s, r)
+    _, _, i_e, _ = closest_on_ring(e, r)
+    if i_s == i_e:
+        return [s, e]
+    fwd = [s] + _walk_vertices(r, i_s, i_e) + [e]
+    bwd = [s] + _walk_back(r, i_s, i_e) + [e]
+
+    def plen(arc: list[Point]) -> float:
+        return sum(
+            math.hypot(arc[i][0] - arc[i - 1][0], arc[i][1] - arc[i - 1][1])
+            for i in range(1, len(arc))
+        )
+
+    return fwd if plen(fwd) <= plen(bwd) else bwd
+
+
+def _signed_normals(pts: list[Point], toward: Point) -> list[Point]:
+    if len(pts) < 2:
+        return [(0.0, 0.0)] * len(pts)
+    nrms: list[Point] = []
+    for i in range(len(pts)):
+        if i == 0:
+            a, b = pts[0], pts[1]
+        elif i == len(pts) - 1:
+            a, b = pts[-2], pts[-1]
+        else:
+            a, b = pts[i - 1], pts[i + 1]
+        vx, vy = b[0] - a[0], b[1] - a[1]
+        ln = math.hypot(vx, vy) or 1.0
+        nrms.append((-vy / ln, vx / ln))
+    p0 = pts[len(pts) // 2]
+    n0 = nrms[len(pts) // 2]
+    dpos = math.hypot(p0[0] + n0[0] - toward[0], p0[1] + n0[1] - toward[1])
+    dneg = math.hypot(p0[0] - n0[0] - toward[0], p0[1] - n0[1] - toward[1])
+    sgn = 1.0 if dpos < dneg else -1.0
+    return [(sgn * n[0], sgn * n[1]) for n in nrms]
+
+
+def _blend01(t: float, edge: float = 0.14) -> float:
+    if edge <= 0:
+        return 1.0
+    x = min(t, 1.0 - t) / edge
+    if x <= 0:
+        return 0.0
+    if x >= 1:
+        return 1.0
+    return x * x * (3.0 - 2.0 * x)
+
+
+def build_midline(
+    arc_a: list[Point], ring_b: Ring
+) -> Optional[tuple[list[Point], list[float]]]:
+    if len(arc_a) < 2:
+        return None
+    mid: list[Point] = []
+    halfs: list[float] = []
+    far = 0
+    for p in arc_a:
+        q, _, _, d = closest_on_ring(p, ring_b)
+        mid.append(((p[0] + q[0]) * 0.5, (p[1] + q[1]) * 0.5))
+        halfs.append(d * 0.5)
+        if d > 14:
+            far += 1
+    if far > max(2, len(arc_a) // 3):
+        return None
+    return mid, halfs
+
+
+def emit_from_midline(
+    mid: list[Point],
+    halfs: list[float],
+    gap: float,
+    toward_a: Point,
+) -> tuple[list[Point], list[Point]]:
+    nrms = _signed_normals(mid, toward_a)
+    n = len(mid)
+    arc_a: list[Point] = []
+    arc_b: list[Point] = []
+    target = gap * 0.5
+    for i, m in enumerate(mid):
+        t = i / (n - 1) if n > 1 else 0.0
+        w = _blend01(t)
+        h0 = halfs[i] if i < len(halfs) else target
+        half = h0 * (1.0 - w) + target * w
+        nx, ny = nrms[i]
+        arc_a.append((m[0] + nx * half, m[1] + ny * half))
+        arc_b.append((m[0] - nx * half, m[1] - ny * half))
+    return arc_a, arc_b
+
+
 def deform_pair(
     ring_a: Ring,
     ring_b: Ring,
@@ -534,16 +627,21 @@ def deform_pair(
     gap: float = SEAM_GAP,
     walk_a: Optional[list[Point]] = None,
 ) -> tuple[Optional[list[Point]], Optional[list[Point]]]:
-    base = densify_open(walk_a if walk_a and len(walk_a) >= 2 else quadratic(s, yellow, e, 28), 2.0)
-    arc_a = pull_walk(base, yellow)
-    arc_b = offset_open(arc_a, gap, _centroid(ring_b))
-    arc_b = push_off(arc_b, arc_a, gap, False)
-    arc_a = push_off(arc_a, arc_b, gap, False)
-    sb, eb = arc_b[0], arc_b[-1]
-    mid_a = ((s[0] + e[0]) / 2.0, (s[1] + e[1]) / 2.0)
-    mid_b = ((sb[0] + eb[0]) / 2.0, (sb[1] + eb[1]) / 2.0)
-    a2 = replace_facing_arc(ring_a, s, e, arc_a, _nudge(mid_a, yellow, 2.0))
-    b2 = replace_facing_arc(ring_b, sb, eb, arc_b, _nudge(mid_b, yellow, 2.0))
+    walk = walk_a if walk_a and len(walk_a) >= 2 else walk_short(ring_a, s, e)
+    arc0 = densify_open(walk, 2.0)
+    built = build_midline(arc0, ring_b)
+    if built is None:
+        return None, None
+    mid, halfs = built
+    mid2 = pull_walk(mid, yellow)
+    toward_a = _centroid(ring_a)
+    arc_a, arc_b = emit_from_midline(mid2, halfs, gap, toward_a)
+    arc_a[0], arc_a[-1] = s, e
+    sb, _, _, _ = closest_on_ring(s, ring_b)
+    eb, _, _, _ = closest_on_ring(e, ring_b)
+    arc_b[0], arc_b[-1] = sb, eb
+    a2 = replace_facing_arc(ring_a, s, e, arc_a, yellow)
+    b2 = replace_facing_arc(ring_b, sb, eb, arc_b, yellow)
     if a2 and b2:
         a2 = _clamp_ring_gap(a2, b2, s, e, gap)
         b2 = _clamp_ring_gap(b2, a2, sb, eb, gap)

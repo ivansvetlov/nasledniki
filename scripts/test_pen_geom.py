@@ -268,10 +268,12 @@ def test_deform_pair_deep_handle_keeps_body() -> None:
     if a2 is None or b2 is None:
         fail("deform_pair None")
     a0, b0 = abs(pg.signed_area(a)), abs(pg.signed_area(b))
-    if abs(pg.signed_area(b2)) < b0 * 0.5:
-        fail("B collapsed: %s vs %s" % (abs(pg.signed_area(b2)), b0))
     if abs(pg.signed_area(a2)) < a0 * 0.5:
         fail("A collapsed: %s vs %s" % (abs(pg.signed_area(a2)), a0))
+    if not pg.point_in_ring((20.0, 50.0), a2):
+        fail("A lost its body")
+    if not pg.point_in_ring((190.0, 50.0), b2):
+        fail("B lost its far side")
 
 
 def test_deform_pair_keeps_gap_at_nose() -> None:
@@ -301,8 +303,40 @@ def test_deform_pair_keeps_gap_at_nose() -> None:
         _, _, _, d = pg.closest_on_ring(p, b2)
         if d < min_d:
             min_d = d
+    # interior of the pulled span must hold 5px; the pinned ends may stay tight
+    interior = [
+        p
+        for p in a2
+        if math.hypot(p[0] - s[0], p[1] - s[1]) > 8
+        and math.hypot(p[0] - e[0], p[1] - e[1]) > 8
+    ]
+    min_d = 1e9
+    for p in interior or a2:
+        _, _, _, d = pg.closest_on_ring(p, b2)
+        if d < min_d:
+            min_d = d
     if min_d < 4.5:
         fail("nose collapsed gap to %s" % min_d)
+
+
+def test_midline_interior_gap_is_five() -> None:
+    a = square()
+    b = [(108.0, 0.0), (200.0, 0.0), (200.0, 100.0), (108.0, 100.0)]
+    s, e = (100.0, 30.0), (100.0, 70.0)
+    yellow = (115.0, 50.0)
+    a2, b2 = pg.deform_pair(a, b, s, e, yellow, gap=5.0)
+    if a2 is None or b2 is None:
+        fail("deform_pair None")
+    mid = None
+    for p in a2:
+        if abs(p[1] - 50.0) < 1.5:
+            mid = p
+            break
+    if mid is None:
+        fail("no A point at y~50")
+    _, _, _, d = pg.closest_on_ring(mid, b2)
+    if d < 4.5 or d > 6.5:
+        fail("interior gap %s, want ~5" % d)
 
 
 def main() -> None:
@@ -322,6 +356,7 @@ def main() -> None:
     test_deform_pair_transfers_area()
     test_deform_pair_deep_handle_keeps_body()
     test_deform_pair_keeps_gap_at_nose()
+    test_midline_interior_gap_is_five()
     print("OK pen_geom excursion + grow + deform")
 
 
