@@ -1,6 +1,8 @@
 (function () {
   var svg = document.querySelector("#stage svg:not(#ruler)");
   var canvas = document.getElementById("draw");
+  var doodleSvg = document.getElementById("doodle");
+  var doodlePath = null;
   var viewport = document.getElementById("viewport");
   var stage = document.getElementById("stage");
   var layersEl = document.getElementById("layers");
@@ -23,6 +25,10 @@
   var MIN_FRAG = 12;
   var GAP_DEFAULT = 3;
   var gapPx = GAP_DEFAULT;
+  var SEAM_GAP = 5;
+  var SEAM_PULL = 6;
+  var SNAP_TOL = 16;
+  var MAGNET_R = 5;
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
 
@@ -65,6 +71,13 @@
     return Array.prototype.slice.call(
       svg.querySelectorAll("path[data-name]:not([data-kind])")
     );
+  }
+  function pathVisible(p) {
+    var g = p && p.parentNode;
+    var lid = g && g.getAttribute ? g.getAttribute("data-layer-id") : null;
+    if (!lid) return true;
+    var L = layerById(parseInt(lid, 10));
+    return L ? L.visible !== false : true;
   }
   function thickness() {
     var n = parseFloat(thickEl.value);
@@ -1463,16 +1476,130 @@
   function snapshotStroke() {
     pushUndo({ type: "stroke", data: ctx.getImageData(0, 0, W, H) });
   }
+  function currentSnapshot() {
+    var snap = {};
+    paths().forEach(function (p) {
+      var g = p.parentNode;
+      var layer = g && g.getAttribute ? g.getAttribute("data-layer-id") : null;
+      snap[p.getAttribute("data-name")] = { tag: p.outerHTML, layer: layer };
+    });
+    return snap;
+  }
+  function currentOverlays() {
+    var o = {};
+    svg.querySelectorAll("[data-kind]").forEach(function (el) {
+      var k =
+        el.getAttribute("data-label") ||
+        el.getAttribute("data-kind") + "#" + (el.getAttribute("data-oid") || "");
+      o[k] = el.outerHTML;
+    });
+    return o;
+  }
+  function tagToEl(tag) {
+    try {
+      var doc = new DOMParser().parseFromString(
+        '<svg xmlns="http://www.w3.org/2000/svg">' + tag + "</svg>",
+        "image/svg+xml"
+      );
+      var el = doc.documentElement.firstElementChild;
+      return el && el.tagName ? el : null;
+    } catch (e) {
+      return null;
+    }
+  }
+  function upsertPath(name, rec) {
+    var old = null;
+    paths().forEach(function (p) {
+      if (p.getAttribute("data-name") === name) old = p;
+    });
+    if (!rec || !rec.tag) {
+      if (old && old.parentNode) old.parentNode.removeChild(old);
+      return;
+    }
+    var neu = tagToEl(rec.tag);
+    if (!neu) return;
+    if (old) old.replaceWith(neu);
+    else {
+      var g = rec.layer ? layerGroup(rec.layer) : null;
+      if (!g) g = stackEl() || svg;
+      g.appendChild(neu);
+    }
+    if (rec.layer) {
+      var g2 = layerGroup(rec.layer);
+      if (g2 && neu.parentNode !== g2) g2.appendChild(neu);
+    }
+    bindPathClick(neu);
+  }
+  function upsertOverlay(key, tag) {
+    var old = null;
+    svg.querySelectorAll("[data-kind]").forEach(function (el) {
+      var k =
+        el.getAttribute("data-label") ||
+        el.getAttribute("data-kind") + "#" + (el.getAttribute("data-oid") || "");
+      if (k === key) old = el;
+    });
+    if (!tag) {
+      if (old && old.parentNode) old.parentNode.removeChild(old);
+      return;
+    }
+    var neu = tagToEl(tag);
+    if (!neu) return;
+    if (old && old.parentNode) old.parentNode.replaceChild(neu, old);
+    else (stackEl() || svg).appendChild(neu);
+  }
+  function restoreSnapshot(snap) {
+    if (!snap) return;
+    var want = snap.paths || {};
+    var present = {};
+    Object.keys(want).forEach(function (n) {
+      present[n] = true;
+    });
+    paths().forEach(function (p) {
+      var n = p.getAttribute("data-name");
+      if (!present[n]) {
+        if (p.parentNode) p.parentNode.removeChild(p);
+      }
+    });
+    Object.keys(want).forEach(function (name) {
+      upsertPath(name, want[name]);
+    });
+    var curOv = {};
+    svg.querySelectorAll("[data-kind]").forEach(function (el) {
+      var k =
+        el.getAttribute("data-label") ||
+        el.getAttribute("data-kind") + "#" + (el.getAttribute("data-oid") || "");
+      curOv[k] = el;
+    });
+    var ovWant = snap.overlays || {};
+    Object.keys(curOv).forEach(function (k) {
+      if (!(k in ovWant) && curOv[k].parentNode)
+        curOv[k].parentNode.removeChild(curOv[k]);
+    });
+    Object.keys(ovWant).forEach(function (k) {
+      upsertOverlay(k, ovWant[k]);
+    });
+    if (snap.layers) {
+      layerList = JSON.parse(JSON.stringify(snap.layers));
+      activeLayerId = snap.activeLayerId;
+      if (snap.layerSeq) layerSeq = snap.layerSeq;
+    }
+    bindOverlayClicks();
+    applyLayerVisibility();
+    buildLayers();
+    buildLabels();
+  }
   function captureState(label, id) {
     return {
       type: "apply",
       id: id || 0,
       label: label || "действие",
-      html: stackEl().innerHTML,
-      labels: labels.slice(),
-      layers: JSON.parse(JSON.stringify(layerList)),
-      activeLayerId: activeLayerId,
-      layerSeq: layerSeq,
+      snap: {
+        paths: currentSnapshot(),
+        overlays: currentOverlays(),
+        layers: JSON.parse(JSON.stringify(layerList)),
+        activeLayerId: activeLayerId,
+        layerSeq: layerSeq,
+      },
     };
   }
   function regionsEl() {
@@ -1504,31 +1631,6 @@
     pushUndo(item);
     scheduleSave();
   }
-  function restoreDom(html, meta) {
-    stackEl().innerHTML = html;
-    if (meta && meta.layers) {
-      layerList = meta.layers;
-      activeLayerId = meta.activeLayerId;
-      if (meta.layerSeq) layerSeq = meta.layerSeq;
-    }
-    paths().forEach(bindPathClick);
-    bindOverlayClicks();
-    applyLayerVisibility();
-    buildLayers();
-  }
-  function restorePaths(map) {
-    paths().forEach(function (p) {
-      var n = p.getAttribute("data-name");
-      if (map[n] != null) p.setAttribute("d", map[n]);
-    });
-  }
-  function currentPaths() {
-    var snap = {};
-    paths().forEach(function (p) {
-      snap[p.getAttribute("data-name")] = p.getAttribute("d");
-    });
-    return snap;
-  }
   function undo(quiet) {
     dropTrailingStrokes();
     var last = undoStack.pop();
@@ -1541,8 +1643,7 @@
       ctx.putImageData(last.data, 0, 0);
     } else {
       redoStack.push(captureState(last.label, last.id));
-      restoreDom(last.html, last);
-      if (last.labels) labels = last.labels.slice();
+      restoreSnapshot(last.snap);
     }
     if (!quiet) {
       if (hint) hint.textContent = "отмена" + (last.label ? " · " + last.label : "");
@@ -1562,8 +1663,7 @@
       ctx.putImageData(last.data, 0, 0);
     } else {
       undoStack.push(captureState(last.label, last.id));
-      restoreDom(last.html, last);
-      if (last.labels) labels = last.labels.slice();
+      restoreSnapshot(last.snap);
     }
     if (!quiet) {
       if (hint) hint.textContent = "повтор" + (last.label ? " · " + last.label : "");
@@ -1683,6 +1783,7 @@
     octx.imageSmoothingEnabled = false;
     for (var t = 0; t < labels.length; t++) labels[t] = 0;
     plist.forEach(function (p, i) {
+      if (!pathVisible(p)) return;
       octx.clearRect(0, 0, W, H);
       var path = new Path2D(p.getAttribute("d"));
       octx.fillStyle = "#fff";
@@ -1691,7 +1792,7 @@
         p.getAttribute("fill-rule") === "evenodd" ? "evenodd" : "nonzero"
       );
       var pix = octx.getImageData(0, 0, W, H).data;
-      var id = i + 1;
+      var id = parseInt(p.getAttribute("data-lid") || "0", 10) || i + 1;
       for (var t = 0; t < W * H; t++) {
         if (pix[t * 4 + 3] > 128) labels[t] = id;
       }
@@ -1907,10 +2008,16 @@
     });
   }
 
+  function clearDoodle() {
+    if (doodlePath && doodlePath.parentNode)
+      doodlePath.parentNode.removeChild(doodlePath);
+    doodlePath = null;
+  }
   function cancelDrawing() {
     if (!drawing) return;
     drawing = false;
     ctx.clearRect(0, 0, W, H);
+    clearDoodle();
     var last = undoStack[undoStack.length - 1];
     if (last && last.type === "stroke") undoStack.pop();
   }
@@ -1936,27 +2043,41 @@
     snapshotStroke();
     drawing = true;
     canvas.setPointerCapture(ev.pointerId);
-    var p = pos(ev);
+    var p = mode === "knife" ? snapToTargetPoint(ev) : pos(ev);
     strokePts = [{ x: p.x, y: p.y }];
-    ctx.beginPath();
-    ctx.moveTo(p.x, p.y);
-    ctx.strokeStyle = mode === "erase" ? "#c0392b" : "#111";
-    ctx.globalCompositeOperation = "source-over";
-    ctx.lineCap = "round";
-    ctx.lineJoin = "round";
-    ctx.lineWidth = strokeWidth();
-    ctx.lineTo(p.x + 0.15, p.y);
-    ctx.stroke();
+    if (mode === "pen" && doodleSvg) {
+      doodlePath = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      doodlePath.setAttribute("stroke-width", String(strokeWidth()));
+      doodlePath.setAttribute("d", "M" + p.x + "," + p.y);
+      doodleSvg.appendChild(doodlePath);
+    } else {
+      ctx.beginPath();
+      ctx.moveTo(p.x, p.y);
+      ctx.strokeStyle = mode === "erase" ? "#c0392b" : "#111";
+      ctx.globalCompositeOperation = "source-over";
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      ctx.lineWidth = strokeWidth();
+      ctx.lineTo(p.x + 0.15, p.y);
+      ctx.stroke();
+    }
   });
   canvas.addEventListener("pointermove", function (ev) {
     if (ruler.live) return;
     if (!drawing) return;
-    var p = pos(ev);
+    var p = mode === "knife" ? snapToTargetPoint(ev) : pos(ev);
     strokePts.push({ x: p.x, y: p.y });
-    ctx.lineTo(p.x, p.y);
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.moveTo(p.x, p.y);
+    if (mode === "pen" && doodlePath) {
+      doodlePath.setAttribute(
+        "d",
+        doodlePath.getAttribute("d") + " L" + p.x + "," + p.y
+      );
+    } else {
+      ctx.lineTo(p.x, p.y);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(p.x, p.y);
+    }
   });
   function stopDraw(ev) {
     if (mode === "ruler") {
@@ -1973,7 +2094,9 @@
     }
     if (!drawing) return;
     drawing = false;
-    if (press.maxd < 18 && Date.now() - press.t < 500) {
+    clearDoodle();
+    var isPenStroke = mode === "pen" && target && strokePts.length >= 2;
+    if (press.maxd < 18 && Date.now() - press.t < 500 && !isPenStroke) {
       ctx.clearRect(0, 0, W, H);
       var last = undoStack[undoStack.length - 1];
       if (last && last.type === "stroke") undoStack.pop();
@@ -2173,115 +2296,382 @@
     }
     return filled;
   }
+  function closestOnSeg(p, a, b) {
+    var vx = b[0] - a[0],
+      vy = b[1] - a[1];
+    var L2 = vx * vx + vy * vy;
+    var t = L2 ? ((p[0] - a[0]) * vx + (p[1] - a[1]) * vy) / L2 : 0;
+    t = Math.max(0, Math.min(1, t));
+    var qx = a[0] + t * vx,
+      qy = a[1] + t * vy;
+    return { x: qx, y: qy, t: t, d: Math.hypot(p[0] - qx, p[1] - qy) };
+  }
+  function segIntersect(a, b, c, d) {
+    var x1 = b[0] - a[0],
+      y1 = b[1] - a[1],
+      x2 = d[0] - c[0],
+      y2 = d[1] - c[1];
+    var denom = x1 * y2 - y1 * x2;
+    if (Math.abs(denom) > 1e-18) {
+      var t = ((c[0] - a[0]) * y2 - (c[1] - a[1]) * x2) / denom;
+      var u = ((c[0] - a[0]) * y1 - (c[1] - a[1]) * x1) / denom;
+      if (t >= 0 && t <= 1 && u >= 0 && u <= 1)
+        return [a[0] + t * x1, a[1] + t * y1];
+    }
+    return null;
+  }
+  function signedArea(ring) {
+    var a = 0;
+    for (var i = 0; i < ring.length; i++) {
+      var j = (i + 1) % ring.length;
+      a += ring[i][0] * ring[j][1] - ring[j][0] * ring[i][1];
+    }
+    return a / 2;
+  }
+  function pointInRing(p, ring) {
+    var inside = false;
+    for (var i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+      var xi = ring[i][0],
+        yi = ring[i][1],
+        xj = ring[j][0],
+        yj = ring[j][1];
+      if ((yi > p[1]) !== (yj > p[1]) && p[0] < ((xj - xi) * (p[1] - yi)) / (yj - yi) + xi)
+        inside = !inside;
+    }
+    return inside;
+  }
+  function lineSegRingIntersect(a, b, ring) {
+    var best = null,
+      bestD = 1e18;
+    for (var i = 0; i < ring.length; i++) {
+      var pt = segIntersect(a, b, ring[i], ring[(i + 1) % ring.length]);
+      if (pt) {
+        var dd = (pt[0] - a[0]) * (pt[0] - a[0]) + (pt[1] - a[1]) * (pt[1] - a[1]);
+        if (dd < bestD) {
+          bestD = dd;
+          best = pt;
+        }
+      }
+    }
+    return best;
+  }
+  function closestOnRingIdx(p, ring) {
+    var best = null,
+      bestD = 1e18;
+    for (var i = 0; i < ring.length; i++) {
+      var c = closestOnSeg(p, ring[i], ring[(i + 1) % ring.length]);
+      if (c.d < bestD) {
+        bestD = c.d;
+        best = { x: c.x, y: c.y, t: c.t, idx: i, d: c.d };
+      }
+    }
+    return best;
+  }
+  function closestOnAnyRing(p, rings) {
+    var best = null,
+      bestD = 1e18;
+    for (var n = 0; n < rings.length; n++) {
+      var c = closestOnRingIdx(p, rings[n]);
+      if (c && c.d < bestD) {
+        bestD = c.d;
+        best = c;
+      }
+    }
+    return best;
+  }
+  function removeLoops(pts) {
+    var out = pts.slice();
+    for (var i = 0; i + 1 < out.length; i++) {
+      for (var j = i + 2; j + 1 < out.length; j++) {
+        var pt = segIntersect(out[i], out[i + 1], out[j], out[j + 1]);
+        if (pt) {
+          out = out.slice(0, i + 1).concat([pt], out.slice(j + 1));
+          return removeLoops(out);
+        }
+      }
+    }
+    return out;
+  }
+  function hasSelfIntersection(ring) {
+    var n = ring.length;
+    for (var i = 0; i + 1 < n; i++) {
+      for (var j = i + 1; j + 1 < n; j++) {
+        if (j === i + 1) continue;
+        var a = ring[i],
+          b = ring[i + 1],
+          c = ring[j],
+          d = ring[j + 1];
+        if ((b[0] === c[0] && b[1] === c[1]) || (a[0] === d[0] && a[1] === d[1]))
+          continue;
+        if (segIntersect(a, b, c, d)) return true;
+      }
+    }
+    return false;
+  }
+  var PEN_ON = 0.51;
+  var PEN_FACE = 10;
+  function penLoc(p, ring) {
+    if (distToRing(p, ring) <= PEN_ON) return "on";
+    if (pointInRing(p, ring)) return "in";
+    return "out";
+  }
+  function penHitsOnSeg(a, b, ring) {
+    var hits = [];
+    var ab = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+    for (var i = 0; i < ring.length; i++) {
+      var pt = segIntersect(a, b, ring[i], ring[(i + 1) % ring.length]);
+      if (!pt) continue;
+      var t =
+        ((pt[0] - a[0]) * (b[0] - a[0]) + (pt[1] - a[1]) * (b[1] - a[1])) /
+        (ab * ab);
+      t = Math.max(0, Math.min(1, t));
+      hits.push({ t: t, p: pt });
+    }
+    hits.sort(function (u, v) {
+      return u.t - v.t;
+    });
+    var out = [];
+    for (var h = 0; h < hits.length; h++) {
+      if (
+        out.length &&
+        Math.hypot(
+          hits[h].p[0] - out[out.length - 1].p[0],
+          hits[h].p[1] - out[out.length - 1].p[1]
+        ) < 0.2
+      )
+        continue;
+      out.push(hits[h]);
+    }
+    return out;
+  }
+  function extractExcursion(stroke, ring) {
+    if (!stroke || stroke.length < 2 || !ring || ring.length < 3) return null;
+    var contacts = [];
+    function pushC(s, pt) {
+      var last = contacts[contacts.length - 1];
+      if (last && Math.abs(s - last.s) < 1e-4) return;
+      if (
+        last &&
+        Math.hypot(pt[0] - last.p[0], pt[1] - last.p[1]) < 0.25
+      )
+        return;
+      contacts.push({ s: s, p: pt });
+    }
+    for (var i = 0; i + 1 < stroke.length; i++) {
+      var hs = penHitsOnSeg(stroke[i], stroke[i + 1], ring);
+      for (var j = 0; j < hs.length; j++) pushC(i + hs[j].t, hs[j].p);
+    }
+    for (var k = 0; k < stroke.length; k++) {
+      if (penLoc(stroke[k], ring) === "on") pushC(k, stroke[k]);
+    }
+    contacts.sort(function (u, v) {
+      return u.s - v.s;
+    });
+    if (contacts.length < 2) return null;
+    function sample(s) {
+      if (s <= 0) return stroke[0];
+      if (s >= stroke.length - 1) return stroke[stroke.length - 1];
+      var ii = Math.floor(s),
+        tt = s - ii;
+      var aa = stroke[ii],
+        bb = stroke[Math.min(ii + 1, stroke.length - 1)];
+      return [aa[0] + (bb[0] - aa[0]) * tt, aa[1] + (bb[1] - aa[1]) * tt];
+    }
+    var payload = [];
+    for (var c = 0; c + 1 < contacts.length; c++) {
+      var midS = (contacts[c].s + contacts[c + 1].s) / 2;
+      if (penLoc(sample(midS), ring) === "out")
+        payload.push([contacts[c], contacts[c + 1]]);
+    }
+    if (payload.length !== 1) return null;
+    var s0 = payload[0][0].s,
+      S = payload[0][0].p,
+      s1 = payload[0][1].s,
+      E = payload[0][1].p;
+    if (s1 - s0 < 1e-4) return null;
+    var mid = [S];
+    for (var m = 0; m < stroke.length; m++) {
+      if (s0 < m && m < s1) mid.push(stroke[m]);
+    }
+    mid.push(E);
+    if (mid.length < 2) return null;
+    return { S: S, E: E, mid: mid };
+  }
+  function penCentroid(ring) {
+    var sx = 0,
+      sy = 0,
+      n = ring.length || 1;
+    for (var i = 0; i < ring.length; i++) {
+      sx += ring[i][0];
+      sy += ring[i][1];
+    }
+    return [sx / n, sy / n];
+  }
+  function penCross(a, b, p) {
+    return (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0]);
+  }
+  function growMid(mid, ring, neighbors, gap, face) {
+    gap = gap || SEAM_GAP;
+    face = face || PEN_FACE;
+    if (mid.length < 2) return mid;
+    var S = mid[0],
+      E = mid[mid.length - 1];
+    var interior = penCentroid(ring);
+    var out = [S];
+    for (var i = 1; i < mid.length - 1; i++) {
+      var p = mid[i];
+      var Q = closestOnRingIdx(p, ring);
+      var qx = Q.x,
+        qy = Q.y;
+      var drawn = Math.hypot(p[0] - qx, p[1] - qy);
+      var onSeam = false,
+        budget = drawn;
+      if (neighbors && neighbors.length) {
+        var nQ = closestOnAnyRing([qx, qy], neighbors);
+        var nP = closestOnAnyRing(p, neighbors);
+        var qn = nQ ? nQ.d : 1e18;
+        var pd = nP ? nP.d : 1e18;
+        if (qn <= face || pd <= face) {
+          onSeam = true;
+          budget = Math.max(0, qn - gap);
+        }
+      }
+      if (onSeam) {
+        if (drawn < 1e-9) out.push([qx, qy]);
+        else {
+          var t = Math.min(1, budget / drawn);
+          out.push([qx + (p[0] - qx) * t, qy + (p[1] - qy) * t]);
+        }
+      } else {
+        var sp = penCross(S, E, p);
+        var si = penCross(S, E, interior);
+        var bay = Math.abs(sp) >= 1e-8 && sp > 0 === si > 0;
+        out.push(bay ? p : [qx, qy]);
+      }
+    }
+    out.push(E);
+    return out;
+  }
+  function walkVerts(ring, iFrom, iTo) {
+    var pts = [];
+    var n = ring.length;
+    var k = (iFrom + 1) % n;
+    var guard = 0;
+    while (k !== iTo && guard <= n) {
+      pts.push(ring[k]);
+      k = (k + 1) % n;
+      guard++;
+    }
+    return pts;
+  }
+  function assembleRing(ring, S, E, newMid) {
+    if (!ring || ring.length < 3 || !newMid || newMid.length < 2) return null;
+    var cS = closestOnRingIdx(S, ring);
+    var cE = closestOnRingIdx(E, ring);
+    if (!cS || !cE) return null;
+    var iS = cS.idx,
+      iE = cE.idx;
+    var cands;
+    if (iS === iE) {
+      var around = ring.slice(iS + 1).concat(ring.slice(0, iS + 1));
+      cands = [newMid.concat(around), newMid.slice()];
+    } else {
+      cands = [
+        newMid.concat(walkVerts(ring, iE, iS)),
+        newMid.slice().reverse().concat(walkVerts(ring, iS, iE)),
+      ];
+    }
+    var orig = signedArea(ring);
+    var origSign = orig >= 0;
+    var best = null,
+      bestA = -1;
+    for (var i = 0; i < cands.length; i++) {
+      var cand = cands[i];
+      if (cand.length < 4) continue;
+      var a = signedArea(cand);
+      if (a >= 0 !== origSign) continue;
+      if (Math.abs(a) > bestA) {
+        bestA = Math.abs(a);
+        best = cand;
+      }
+    }
+    if (!best || bestA < Math.abs(orig) * 0.45) return null;
+    return best;
+  }
+  function vectorDoodle(target, pts) {
+    var p = null;
+    paths().forEach(function (pp) {
+      if (pp.getAttribute("data-name") === target) p = pp;
+    });
+    if (!p) return false;
+    var tid = lid(p);
+    var rings = parseD(p.getAttribute("d"));
+    var oi = largestRingIx(rings);
+    var ring = rings[oi];
+    if (!ring || ring.length < 4) return false;
+    var neighbors = [];
+    paths().forEach(function (pp) {
+      if (lid(pp) === tid || !pathVisible(pp)) return;
+      if (pp.closest && pp.closest("#water")) return;
+      var rr = parseD(pp.getAttribute("d"));
+      if (rr[0] && rr[0].length >= 3) neighbors.push(rr[0]);
+    });
+    var line = pts.map(function (pt) {
+      return [pt.x, pt.y];
+    });
+    if (line.length < 2) return false;
+    var ex = extractExcursion(line, ring);
+    if (!ex) return false;
+    var grown = growMid(ex.mid, ring, neighbors, SEAM_GAP, PEN_FACE);
+    var cand = assembleRing(ring, ex.S, ex.E, grown);
+    if (!cand) return false;
+    var newRings = rings.slice();
+    newRings[oi] = cand;
+    p.setAttribute("d", ringsToDFine(newRings));
+    buildLabels();
+    return true;
+  }
   function applyPaint() {
     if (!target) {
       hint.textContent = "выберите район";
       return;
     }
-    var ink = ctx.getImageData(0, 0, W, H).data;
-    var inkMask = new Uint8Array(W * H);
-    var has = false;
-    for (var y = 0; y < H; y++) {
-      for (var x = 0; x < W; x++) {
-        var j = (y * W + x) * 4;
-        if (!inkHits(ink, j)) continue;
-        inkMask[y * W + x] = 1;
-        has = true;
-      }
-    }
-    if (!has) return;
-    var plist = paths();
-    var tid = -1;
-    plist.forEach(function (p) {
-      if (p.getAttribute("data-name") === target) tid = lid(p);
-    });
-    if (tid < 1) return;
-    snapshotPaths("карандаш · " + short(target));
-    var neu = new Uint8Array(W * H);
-    var stolenFrom = new Uint16Array(W * H);
-    var paintedVoid = 0;
-    for (var i = 0; i < labels.length; i++) {
-      if (!inkMask[i]) continue;
-      var prev = labels[i];
-      if (prev === tid) continue;
-      if (prev === 0) {
-        labels[i] = tid;
-        neu[i] = 1;
-        paintedVoid++;
-      } else {
-        stolenFrom[i] = prev;
-      }
-    }
-    var pocket = fillEnclosedVoid(tid, inkMask, neu);
-    for (var k = 0; k < stolenFrom.length; k++) {
-      if (!stolenFrom[k]) continue;
-      labels[k] = tid;
-      neu[k] = 1;
-    }
-    keepNewWithGap(tid, neu, gapPx);
-    var claimed = 0;
-    var restored = 0;
-    var touched = {};
-    touched[tid] = 1;
-    for (var t = 0; t < stolenFrom.length; t++) {
-      if (!stolenFrom[t]) continue;
-      if (labels[t] === tid) {
-        claimed++;
-        touched[stolenFrom[t]] = 1;
-      } else {
-        labels[t] = stolenFrom[t];
-        neu[t] = 0;
-        restored++;
-      }
-    }
-    var keptNew = 0;
-    for (var n = 0; n < neu.length; n++) if (neu[n] && labels[n] === tid) keptNew++;
-    if (!keptNew && !claimed) {
-      discardLastUndo();
+    var pts = strokePts;
+    if (!pts || pts.length < 2) {
       ctx.clearRect(0, 0, W, H);
-      hint.textContent =
-        "площадь не добавилась — замкни петлю на выбранном районе или рисуй по подложке";
+      hint.textContent = "проведи линию";
       return;
     }
-    dropSpeckles(tid);
-    Object.keys(touched).forEach(function (idk) {
-      var id = parseInt(idk, 10);
-      dropSpeckles(id);
-      if (id !== tid) splitIslands(id, touched);
+    var p = null;
+    paths().forEach(function (pp) {
+      if (pp.getAttribute("data-name") === target) p = pp;
     });
-    var zoneSrc = new Uint8Array(W * H);
-    for (var zi = 0; zi < zoneSrc.length; zi++) {
-      if (inkMask[zi] || neu[zi]) zoneSrc[zi] = 1;
+    if (!p) return;
+    var tid = lid(p);
+    if (tid < 1) return;
+    var rings = parseD(p.getAttribute("d"));
+    var ring = rings[largestRingIx(rings)];
+    if (!ring || ring.length < 4) {
+      ctx.clearRect(0, 0, W, H);
+      hint.textContent = "район пуст";
+      return;
     }
-    var pdt = chebyshevDT(zoneSrc);
-    var editZone = new Uint8Array(W * H);
-    for (var z = 0; z < pdt.length; z++) if (pdt[z] <= 16) editZone[z] = 1;
-    rebuildIds(touched, editZone);
-    buildLayers();
-    document.querySelectorAll(".layer").forEach(function (el) {
-      el.classList.toggle(
-        "on",
-        selected.indexOf(el.getAttribute("data-name")) >= 0
-      );
-    });
+    snapshotPaths("карандаш · " + short(target));
+    var d0 = p.getAttribute("d");
+    var ok = vectorDoodle(target, pts);
     ctx.clearRect(0, 0, W, H);
-    if (pocket)
-      hint.textContent =
-        "добавлена площадь внутрь петли → " +
-        short(target) +
-        " · щель " +
-        gapPx +
-        "px";
-    else if (claimed)
-      hint.textContent =
-        "дорисовано + забрано у соседа → " +
-        short(target) +
-        " · щель " +
-        gapPx +
-        "px";
-    else
-      hint.textContent =
-        "дорисовано по подложке → " + short(target) + " · щель " + gapPx + "px";
+    if (ok && p.getAttribute("d") !== d0) {
+      buildLayers();
+      document.querySelectorAll(".layer").forEach(function (el) {
+        el.classList.toggle(
+          "on",
+          selected.indexOf(el.getAttribute("data-name")) >= 0
+        );
+      });
+      hint.textContent = "дорисовано → " + short(target);
+    } else {
+      discardLastUndo();
+    }
   }
 
   function nextLabelId() {
@@ -2513,6 +2903,40 @@
       }
     }
     return { punched: punched, kept: kept };
+  }
+  function seamSnap(tid, neu, gap, pull) {
+    gap = gap || SEAM_GAP;
+    pull = pull == null ? SEAM_PULL : pull;
+    var foreign = new Uint8Array(W * H);
+    var hasForeign = false;
+    for (var i = 0; i < labels.length; i++) {
+      if (labels[i] && labels[i] !== tid) {
+        foreign[i] = 1;
+        hasForeign = true;
+      }
+    }
+    if (!hasForeign) return { punched: 0, pulled: 0 };
+    var dt = chebyshevDT(foreign);
+    var dn = chebyshevDT(neu);
+    var punched = 0,
+      pulled = 0;
+    for (var j = 0; j < labels.length; j++) {
+      if (!neu[j] || labels[j] !== tid) continue;
+      if (dt[j] > 0 && dt[j] <= gap) {
+        labels[j] = 0;
+        neu[j] = 0;
+        punched++;
+      }
+    }
+    for (var k = 0; k < labels.length; k++) {
+      if (labels[k] !== 0) continue;
+      if (dt[k] > gap && dt[k] <= gap + pull && dn[k] <= pull) {
+        labels[k] = tid;
+        neu[k] = 1;
+        pulled++;
+      }
+    }
+    return { punched: punched, pulled: pulled };
   }
   function nearestTwoIds(x, y, maxr) {
     var first = 0;
@@ -2802,6 +3226,7 @@
     paths().forEach(function (p) {
       var nm = p.getAttribute("data-name");
       if (names.indexOf(nm) < 0) return;
+      if (!pathVisible(p)) return;
       if (!p.getAttribute("data-orig-d"))
         p.setAttribute("data-orig-d", p.getAttribute("d") || "");
       var baseD = p.getAttribute("data-orig-d");
@@ -2822,7 +3247,7 @@
     });
     var seamsChanged = 0;
     if (!restore)
-      seamsChanged = seamAlignPathsAll(names && names.length ? names : null);
+      seamsChanged = seamAlignPathsAll(names && names.length ? names : null, SEAM_GAP);
     if (typeof buildLabels === "function") buildLabels();
     if (hint)
       hint.textContent = restore
@@ -2842,8 +3267,7 @@
     smoothDistrictPaths(all);
   }
   function smoothSelected() {
-    if (selected && selected.length) smoothDistrictPaths(selected.slice());
-    else smoothAll();
+    smoothAll();
   }
   function resampleChain(chain, n) {
     if (!chain.length) return [];
@@ -2892,7 +3316,27 @@
       if (runs[i].length > best.length) best = runs[i];
     return best;
   }
-  function seamAlignPairRings(ringsA, ringsB, maxD) {
+  function offsetMid(mid, fa, fb, gap) {
+    var n = mid.length;
+    var a = resampleChain(fa, n),
+      b = resampleChain(fb, n);
+    var half = gap / 2;
+    var A = [],
+      B = [];
+    for (var i = 0; i < n; i++) {
+      var mx = mid[i][0],
+        my = mid[i][1];
+      var dax = a[i][0] - mx,
+        day = a[i][1] - my;
+      var dal = Math.hypot(dax, day);
+      var ux = dal > 1e-6 ? dax / dal : 0,
+        uy = dal > 1e-6 ? day / dal : 0;
+      A.push([mx + ux * half, my + uy * half]);
+      B.push([mx - ux * half, my - uy * half]);
+    }
+    return { A: A, B: B };
+  }
+  function seamAlignPairRings(ringsA, ringsB, maxD, gap) {
     var A = ringsA[0],
       B = ringsB[0];
     if (!A || !B || A.length < 4 || B.length < 4) return null;
@@ -2927,22 +3371,30 @@
     var fbO = fb[0][0] === fb0[0] && fb[0][1] === fb0[1] ? fb : fb.slice().reverse();
     var mid = midpointChain(faO, fbO);
     if (mid.length < 2) return null;
+    var chainA = mid,
+      chainB = mid;
+    if (gap > 0) {
+      var off = offsetMid(mid, faO, fbO, gap);
+      chainA = off.A;
+      chainB = off.B;
+    }
     var tailA = walkRing(A, fa1, fa0, true).slice(1);
-    var newA = mid.concat(tailA);
+    var newA = chainA.concat(tailA);
     var tailB = walkRing(B, fb1, fb0, true).slice(1);
-    var newB = mid.slice().reverse().concat(tailB);
+    var newB = chainB.slice().reverse().concat(tailB);
     return {
       A: [newA].concat(ringsA.slice(1)),
       B: [newB].concat(ringsB.slice(1)),
     };
   }
-  function seamAlignPathsAll(onlyNames) {
+  function seamAlignPathsAll(onlyNames, gap) {
     var all = paths();
     var changed = 0;
     for (var i = 0; i < all.length; i++) {
       for (var j = i + 1; j < all.length; j++) {
         var pa = all[i],
           pb = all[j];
+        if (!pathVisible(pa) || !pathVisible(pb)) continue;
         if (onlyNames && onlyNames.length) {
           var na = pa.getAttribute("data-name"),
             nb = pb.getAttribute("data-name");
@@ -2951,7 +3403,7 @@
         var ra = parseD(pa.getAttribute("d")),
           rb = parseD(pb.getAttribute("d"));
         if (!ra[0] || !rb[0]) continue;
-        var r = seamAlignPairRings(ra, rb, 9);
+        var r = seamAlignPairRings(ra, rb, 9, gap);
         if (!r) continue;
         pa.setAttribute("d", ringsToDFine(r.A));
         pb.setAttribute("d", ringsToDFine(r.B));
@@ -3525,8 +3977,10 @@
     var extra = afterKeep - beforeKeep - allGap.length;
     if (!stitchOk || extra > 8) {
       var snap = undoStack.pop();
-      if (snap && snap.labels) labels = snap.labels.slice();
-      if (snap && snap.html) restoreDom(snap.html, snap);
+      if (snap) {
+        if (snap.type === "stroke") ctx.putImageData(snap.data, 0, 0);
+        else restoreSnapshot(snap.snap);
+      }
       renderJournal();
       if (hint)
         hint.textContent = stitchOk
@@ -3579,7 +4033,7 @@
     markerBtn.onclick = function () {
       setMode("marker");
     };
-  var magnetBtn = document.getElementById("btn-magnet");
+var magnetBtn = document.getElementById("btn-magnet");
   if (magnetBtn)
     magnetBtn.onclick = function () {
       magnetOn = !magnetOn;
@@ -3604,8 +4058,12 @@
       setHand(true);
       if (hint) hint.textContent = "рука — тащи карту · снова рука или V — выход";
     };
-  document.getElementById("btn-undo").onclick = undo;
-  document.getElementById("btn-redo").onclick = redo;
+  document.getElementById("btn-undo").onclick = function () {
+    undo();
+  };
+  document.getElementById("btn-redo").onclick = function () {
+    redo();
+  };
   document.getElementById("btn-fit").onclick = fit;
   var smoothBtn = document.getElementById("btn-smooth");
   if (smoothBtn)
@@ -3652,6 +4110,17 @@
     railLayers.onclick = function () {
       showLeft("layers");
     };
+  var appRoot = document.querySelector(".app");
+  var railCollapse = document.getElementById("rail-collapse");
+  if (railCollapse)
+    railCollapse.onclick = function () {
+      if (!appRoot) return;
+      appRoot.classList.toggle("sb-collapsed");
+      saveSidebarPref("collapsed", appRoot.classList.contains("sb-collapsed"));
+    };
+  if (appRoot && sidebarPref("collapsed", false)) {
+    appRoot.classList.add("sb-collapsed");
+  }
 
   var crossEl = document.getElementById("cross");
   var xyEl = document.getElementById("xy");
@@ -3788,6 +4257,29 @@
       return { x: p.x, y: p.y, snap: false, id: 0 };
     return snapToCoast(p.x, p.y, otherId || 0);
   }
+  function snapToTargetPoint(ev) {
+    var p = pos(ev);
+    if (!magnetOn || (ev && ev.altKey))
+      return { x: p.x, y: p.y, snap: false, id: 0 };
+    if (!target)
+      return { x: p.x, y: p.y, snap: false, id: 0 };
+    var tp = null;
+    paths().forEach(function (pp) {
+      if (pp.getAttribute("data-name") === target) tp = pp;
+    });
+    if (!tp) return { x: p.x, y: p.y, snap: false, id: 0 };
+    var rings = parseD(tp.getAttribute("d"));
+    var ring = rings[largestRingIx(rings)];
+    if (!ring || ring.length < 3)
+      return { x: p.x, y: p.y, snap: false, id: 0 };
+    var R = MAGNET_R / (pan.s || 1);
+    if (R < 1) R = 1;
+    if (distToRing([p.x, p.y], ring) <= R) {
+      var q = closestOnRing([p.x, p.y], ring);
+      return { x: q[0], y: q[1], snap: true, id: lid(tp) };
+    }
+    return { x: p.x, y: p.y, snap: false, id: 0 };
+  }
   function syncMagnetBtn() {
     var b = document.getElementById("btn-magnet");
     if (b) b.classList.toggle("on", magnetOn);
@@ -3905,12 +4397,24 @@
     });
     bindSvgShell();
     initLayers();
-    if (pendingLayerState && pendingLayerState.layers) {
-      layerList = pendingLayerState.layers;
-      if (pendingLayerState.activeLayerId)
-        activeLayerId = pendingLayerState.activeLayerId;
-      if (pendingLayerState.layerSeq) layerSeq = pendingLayerState.layerSeq;
-      applyLayerVisibility();
+    if (pendingLayerState) {
+      if (pendingLayerState.layers) {
+        layerList = pendingLayerState.layers;
+        if (pendingLayerState.activeLayerId)
+          activeLayerId = pendingLayerState.activeLayerId;
+        if (pendingLayerState.layerSeq) layerSeq = pendingLayerState.layerSeq;
+        applyLayerVisibility();
+      }
+      if (pendingLayerState.journal) {
+        var j = pendingLayerState.journal;
+        undoStack = (j.undo || []).filter(function (s) {
+          return s && s.type === "apply" && s.snap;
+        });
+        redoStack = (j.redo || []).filter(function (s) {
+          return s && s.type === "apply" && s.snap;
+        });
+        actionSeq = j.seq || 0;
+      }
       pendingLayerState = null;
     }
     bindOverlayClicks();
@@ -3987,7 +4491,7 @@
     var tgt = document.getElementById("map-search-target");
     if (tgt)
       tgt.textContent = m.name
-        ? "загрузить в «" + m.name + "» · ПКМ по проекту — удалить"
+        ? "в проект: «" + m.name + "» — найди и добавь район/город/область"
         : "загрузка в текущий проект";
     renderMapList(lastCatalog);
   }
@@ -4075,6 +4579,20 @@
     if (layersFold) box.appendChild(layersFold);
     if (journalBox) box.appendChild(journalBox);
   }
+  function sidebarPref(key, def) {
+    try {
+      var raw = localStorage.getItem("nl_sb_" + key);
+      return raw ? JSON.parse(raw) : def;
+    } catch (e) {
+      return def;
+    }
+  }
+  function saveSidebarPref(key, val) {
+    try {
+      localStorage.setItem("nl_sb_" + key, JSON.stringify(val));
+    } catch (e) {}
+  }
+  var dragSlug = null;
   function renderMapList(cat) {
     if (cat) lastCatalog = cat;
     if (!mapListEl) return;
@@ -4091,11 +4609,70 @@
         "открой http://127.0.0.1:8765 — file:// не ходит в OSM";
       mapListEl.appendChild(note);
     }
+    var maps = lastCatalog.maps || [];
+    var order = sidebarPref("order", []);
+    var minimized = sidebarPref("min", {});
+    var sortKey = {};
+    order.forEach(function (s, i) {
+      sortKey[s] = i;
+    });
+    var sorted = maps.slice().sort(function (a, b) {
+      var ka = sortKey[a.slug],
+        kb = sortKey[b.slug];
+      if (ka == null && kb == null) return 0;
+      if (ka == null) return 1;
+      if (kb == null) return -1;
+      return ka - kb;
+    });
     var currentCard = null;
-    (lastCatalog.maps || []).forEach(function (m) {
+    sorted.forEach(function (m) {
       var card = document.createElement("div");
-      card.className = "map-item" + (m.slug === currentSlug ? " on" : "");
+      card.className =
+        "map-item" +
+        (m.slug === currentSlug ? " on" : "") +
+        (minimized[m.slug] ? " min" : "");
       card.setAttribute("data-slug", m.slug);
+      card.draggable = true;
+      card.addEventListener("dragstart", function (e) {
+        dragSlug = m.slug;
+        card.classList.add("dragging");
+        if (e.dataTransfer) {
+          e.dataTransfer.effectAllowed = "move";
+          try {
+            e.dataTransfer.setData("text/plain", m.slug);
+          } catch (err) {}
+        }
+      });
+      card.addEventListener("dragend", function () {
+        card.classList.remove("dragging");
+        dragSlug = null;
+        var newOrder = [];
+        Array.prototype.slice
+          .call(mapListEl.querySelectorAll(".map-item"))
+          .forEach(function (c) {
+            newOrder.push(c.getAttribute("data-slug"));
+          });
+        saveSidebarPref("order", newOrder);
+      });
+      card.addEventListener("dragover", function (e) {
+        e.preventDefault();
+        if (dragSlug && dragSlug !== m.slug) card.classList.add("drag-over");
+      });
+      card.addEventListener("dragleave", function () {
+        card.classList.remove("drag-over");
+      });
+      card.addEventListener("drop", function (e) {
+        e.preventDefault();
+        card.classList.remove("drag-over");
+        if (!dragSlug || dragSlug === m.slug) return;
+        var src = mapListEl.querySelector(
+          '.map-item[data-slug="' + dragSlug + '"]'
+        );
+        if (src && src !== card) {
+          var next = card.nextSibling;
+          mapListEl.insertBefore(src, next === src ? card : next);
+        }
+      });
       var b = document.createElement("button");
       b.type = "button";
       b.className = "map-item-btn";
@@ -4105,9 +4682,9 @@
       b.querySelector(".meta").textContent = kindLabel(m);
       b.onclick = function () {
         if (m.slug === currentSlug) {
-          layersOpen = !layersOpen;
-          var fold = document.getElementById("layers-fold");
-          if (fold) fold.classList.toggle("open", layersOpen);
+          minimized[m.slug] = !minimized[m.slug];
+          saveSidebarPref("min", minimized);
+          renderMapList();
           return;
         }
         openMap(m);
@@ -4137,10 +4714,27 @@
     if (mapSearch && box) box.appendChild(mapSearch);
   }
   function editorState() {
+    function compact(list) {
+      var out = [];
+      for (var i = 0; i < list.length; i++) {
+        if (list[i].type !== "apply") continue;
+        out.push({
+          type: "apply",
+          id: list[i].id,
+          label: list[i].label,
+          snap: list[i].snap,
+        });
+      }
+      return out;
+    }
+    var maxJournal = 25;
+    var undo = compact(undoStack);
+    if (undo.length > maxJournal) undo = undo.slice(undo.length - maxJournal);
     return {
       layers: JSON.parse(JSON.stringify(layerList)),
       activeLayerId: activeLayerId,
       layerSeq: layerSeq,
+      journal: { undo: undo, redo: compact(redoStack), seq: actionSeq },
     };
   }
   function currentSvgText() {
@@ -4244,6 +4838,7 @@
       })
       .then(function (j) {
         if (op !== mapOp) return;
+        if (mapHits) mapHits.innerHTML = "";
         pendingLayerState = j.state || null;
         currentSlug = (j.map && j.map.slug) || m.slug;
         remountSvg(j.svg);
@@ -4266,6 +4861,16 @@
     if (hint && text) hint.textContent = text;
     if (mapSearch) mapSearch.classList.toggle("busy", !!on);
     if (mapGo) mapGo.disabled = !!on;
+  }
+  function toggleMapSearch(force) {
+    if (!mapSearch) return;
+    var show =
+      force !== undefined ? !!force : !mapSearch.classList.contains("show");
+    mapSearch.classList.toggle("show", show);
+    if (show && mapQ) setTimeout(function () {
+      mapQ.focus();
+    }, 0);
+    return show;
   }
   function pickBestHit(q, hits) {
     q = String(q || "")
@@ -4324,10 +4929,6 @@
       setMapStatus("запусти: python scripts/map_server.py");
       return;
     }
-    if (!currentSlug) {
-      setMapStatus("сначала создай проект — кнопка +");
-      return;
-    }
     setBusy(true, "ищу «" + q + "»…");
     fetch("/api/search?q=" + encodeURIComponent(q), {
       credentials: "same-origin",
@@ -4357,9 +4958,40 @@
         setBusy(false, "поиск не удался: " + e);
       });
   }
+  function createProjectFromHit(hit) {
+    setBusy(true, "создаю проект «" + (hit.name || "") + "»…");
+    fetch("/api/maps", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        query: hit.name,
+        hit: hit,
+      }),
+    })
+      .then(function (r) {
+        return r.json();
+      })
+      .then(function (j) {
+        setBusy(false);
+        if (j.error) {
+          setMapStatus(j.error);
+          return;
+        }
+        if (j.map) {
+          lastCatalog.maps = (lastCatalog.maps || []).concat([j.map]);
+          renderMapList();
+          openMap(j.map);
+        }
+      })
+      .catch(function (e) {
+        setBusy(false);
+        setMapStatus("не создался: " + e);
+      });
+  }
   function loadIntoCurrent(hit) {
     if (!currentSlug) {
-      setMapStatus("сначала создай проект — кнопка +");
+      createProjectFromHit(hit);
       return;
     }
     var slug = currentSlug;
@@ -4384,23 +5016,21 @@
       })
       .then(function (j) {
         if (j.map) upsertCatalogMap(j.map);
-        if (op !== mapOp) return;
         if (j.error) {
           suppressSave = false;
           setBusy(false, j.error);
+          renderMapList();
           return;
         }
         setBusy(false);
-        if (j.map && currentSlug === slug) openMap(j.map);
-        else {
-          suppressSave = false;
-          renderMapList();
-        }
+        suppressSave = false;
+        renderMapList();
+        if (op === mapOp && currentSlug === slug && j.map) openMap(j.map);
       })
       .catch(function (e) {
-        if (op !== mapOp) return;
         suppressSave = false;
         setBusy(false, "сборка не удалась: " + e);
+        renderMapList();
       });
   }
   function refreshCatalog() {
@@ -4418,59 +5048,39 @@
       })
       .catch(function () {});
   }
-  function openNewProject(m) {
-    mapOp++;
-    setBusy(false);
-    currentSlug = m.slug;
-    emptyCanvas();
-    setMapChrome(m);
-    showLeft("maps");
-    if (mapQ) {
-      mapQ.value = "";
-      mapQ.focus();
-    }
-    if (mapHits) mapHits.innerHTML = "";
-    setMapStatus("загрузить район или город в этот проект");
+  var npModal = document.getElementById("new-project");
+  var npQ = document.getElementById("np-q");
+  var npName = document.getElementById("np-name");
+  var npHits = document.getElementById("np-hits");
+  var npErr = document.getElementById("np-err");
+  var npCreate = document.getElementById("np-create");
+  var npEmpty = document.getElementById("np-empty");
+  var npSelected = null;
+  function openNewProjectModal() {
+    if (!npModal) return;
+    npSelected = null;
+    if (npErr) npErr.textContent = "";
+    if (npQ) npQ.value = "";
+    if (npName) npName.value = "";
+    if (npHits) npHits.innerHTML = "";
+    if (npCreate) npCreate.disabled = true;
+    npModal.classList.add("show");
+    if (npName) setTimeout(function () {
+      npName.focus();
+    }, 0);
+  }
+  function closeNewProjectModal() {
+    if (npModal) npModal.classList.remove("show");
   }
   var btnNew = document.getElementById("btn-new-map");
   if (btnNew)
     btnNew.onclick = function () {
       showLeft("maps");
       if (!hasApi()) {
-        var n = (lastCatalog.maps || []).length + 1;
-        var m = {
-          slug: "local-" + Date.now(),
-          name: "Проект " + n,
-          kind: "empty",
-          zones: 0,
-        };
-        lastCatalog.maps = (lastCatalog.maps || []).concat([m]);
-        openNewProject(m);
-        setMapStatus("сначала: python scripts/map_server.py");
+        setMapStatus("запусти: python scripts/map_server.py");
         return;
       }
-      fetch("/api/maps", {
-        method: "POST",
-        credentials: "same-origin",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "create" }),
-      })
-        .then(function (r) {
-          return r.json();
-        })
-        .then(function (j) {
-          if (j.error) {
-            setMapStatus(j.error);
-            return;
-          }
-          if (j.map) {
-            lastCatalog.maps = (lastCatalog.maps || []).concat([j.map]);
-            openNewProject(j.map);
-          }
-        })
-        .catch(function (e) {
-          setMapStatus("не создался: " + e);
-        });
+      openNewProjectModal();
     };
   var searchTimer = 0;
   if (mapQ) {
@@ -4495,6 +5105,252 @@
       clearTimeout(searchTimer);
       runSearch(true);
     };
+
+  var npTimer = 0;
+  function npRender(q) {
+    if (!npHits) return;
+    npHits.innerHTML = "";
+    npSelected = null;
+    if (npCreate) npCreate.disabled = true;
+    fetch("/api/search?q=" + encodeURIComponent(q), {
+      credentials: "same-origin",
+    })
+      .then(function (r) {
+        return r.json();
+      })
+      .then(function (j) {
+        if (npHits) npHits.innerHTML = "";
+        if (npErr) npErr.textContent = "";
+        if (!(j.hits || []).length) {
+          if (npErr) npErr.textContent = "ничего не нашли";
+          return;
+        }
+        var best = pickBestHit(q, j.hits);
+        (j.hits || []).forEach(function (h) {
+          var b = document.createElement("button");
+          b.type = "button";
+          b.className = "hit";
+          b.innerHTML =
+            "<b>" +
+            h.name +
+            "</b><small>" +
+            (KIND_RU[h.kind] || h.type || "") +
+            " · " +
+            (h.display || "") +
+            "</small>";
+          b.onclick = function () {
+            npSelected = h;
+            if (npCreate) npCreate.disabled = false;
+            if (npName && !npName.value.trim()) npName.value = h.name;
+            Array.prototype.slice.call(npHits.children).forEach(function (x) {
+              x.classList.remove("on");
+            });
+            b.classList.add("on");
+          };
+          if (h === best) {
+            npSelected = h;
+            if (npCreate) npCreate.disabled = false;
+            if (npName && !npName.value.trim()) npName.value = h.name;
+            b.classList.add("on");
+          }
+          npHits.appendChild(b);
+        });
+      })
+      .catch(function () {
+        if (npErr) npErr.textContent = "поиск не удался";
+      });
+  }
+  if (npQ)
+    npQ.addEventListener("input", function () {
+      clearTimeout(npTimer);
+      var q = npQ.value.trim();
+      if (q.length < 5) {
+        if (npHits) npHits.innerHTML = "";
+        npSelected = null;
+        if (npCreate) npCreate.disabled = true;
+        return;
+      }
+      npTimer = setTimeout(function () {
+        npRender(q);
+      }, 700);
+    });
+  if (npQ)
+    npQ.addEventListener("keydown", function (e) {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        clearTimeout(npTimer);
+        npRender(npQ.value.trim());
+      }
+    });
+  if (npCreate)
+    npCreate.onclick = function () {
+      if (!npSelected) return;
+      closeNewProjectModal();
+      createProjectFromHit(npSelected);
+    };
+  if (npEmpty)
+    npEmpty.onclick = function () {
+      var name = (npName && npName.value.trim()) || "";
+      closeNewProjectModal();
+      if (!hasApi()) {
+        setMapStatus("запусти: python scripts/map_server.py");
+        return;
+      }
+      setBusy(true, "создаю проект…");
+      fetch("/api/maps", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "create", name: name || undefined }),
+      })
+        .then(function (r) {
+          return r.json();
+        })
+        .then(function (j) {
+          setBusy(false);
+          if (j.error) {
+            setMapStatus(j.error);
+            return;
+          }
+          if (j.map) {
+            lastCatalog.maps = (lastCatalog.maps || []).concat([j.map]);
+            renderMapList();
+            openMap(j.map);
+          }
+        })
+        .catch(function (e) {
+          setBusy(false);
+          setMapStatus("не создался: " + e);
+        });
+    };
+  var npClose = document.getElementById("np-close");
+  if (npClose) npClose.onclick = closeNewProjectModal;
+  var npCancel = document.getElementById("np-cancel");
+  if (npCancel) npCancel.onclick = closeNewProjectModal;
+  if (npModal)
+    npModal.addEventListener("mousedown", function (e) {
+      if (e.target === npModal) closeNewProjectModal();
+    });
+
+  var copiesOpen = false;
+  var copiesListEl = document.getElementById("copies-list");
+  var copiesBox = document.getElementById("copies");
+  var copiesToggle = document.getElementById("copies-toggle");
+  var copyNowBtn = document.getElementById("copy-now");
+  if (copiesToggle)
+    copiesToggle.onclick = function () {
+      copiesOpen = !copiesOpen;
+      if (copiesBox) copiesBox.classList.toggle("open", copiesOpen);
+      if (copiesOpen) refreshCopies();
+    };
+  if (copyNowBtn)
+    copyNowBtn.onclick = function () {
+      if (!currentSlug || !hasApi()) {
+        setMapStatus("сначала открой проект");
+        return;
+      }
+      var def = (currentProject() || {}).name || currentSlug;
+      var name = window.prompt("Имя копии", def);
+      if (!name || !String(name).trim()) return;
+      name = String(name).trim();
+      var slug = currentSlug;
+      setBusy(true, "сохраняю копию «" + name + "»…");
+      fetch("/v1/maps/" + encodeURIComponent(name) + "/publish", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ slug: slug, name: name }),
+      })
+        .then(function (r) {
+          return r.json();
+        })
+        .then(function (j) {
+          setBusy(false);
+          if (j.error) {
+            setMapStatus(j.error);
+            return;
+          }
+          copiesOpen = true;
+          if (copiesBox) copiesBox.classList.add("open");
+          refreshCopies();
+          setMapStatus("копия сохранена: " + (j.map || name) + " v" + (j.version || ""));
+        })
+        .catch(function (e) {
+          setBusy(false);
+          setMapStatus("копия не сохранилась: " + e);
+        });
+    };
+  function refreshCopies() {
+    if (!hasApi() || !currentUser) return;
+    fetch("/v1/maps", { credentials: "same-origin" })
+      .then(function (r) {
+        return r.json();
+      })
+      .then(function (j) {
+        if (!copiesListEl) return;
+        copiesListEl.innerHTML = "";
+        var maps = j.maps || [];
+        if (!maps.length) {
+          var p = document.createElement("div");
+          p.id = "copies-empty";
+          p.textContent = "пока нет копий — нажми 💾";
+          copiesListEl.appendChild(p);
+          return;
+        }
+        maps.forEach(function (m) {
+          var row = document.createElement("div");
+          row.className = "cpy";
+          var name = document.createElement("div");
+          name.className = "cname";
+          name.textContent = m.title || m.id;
+          name.title = m.id;
+          var meta = document.createElement("div");
+          meta.className = "cmeta";
+          meta.textContent = "v" + m.version + " · " + m.zones;
+          var link3d = document.createElement("a");
+          link3d.href =
+            "http://localhost:5173/?map=" + encodeURIComponent(m.id);
+          link3d.target = "_blank";
+          link3d.rel = "noopener";
+          link3d.textContent = "3D";
+          link3d.title = "построить 3D от копии";
+          var linkSvg = document.createElement("a");
+          linkSvg.href = "/v1/maps/" + encodeURIComponent(m.id) + ".svg";
+          linkSvg.target = "_blank";
+          linkSvg.rel = "noopener";
+          linkSvg.textContent = "SVG";
+          linkSvg.title = "открыть svg копии";
+          var linkCopy = document.createElement("a");
+          linkCopy.href = "#";
+          linkCopy.textContent = "🔗";
+          linkCopy.title = "скопировать ссылку 3D";
+          linkCopy.onclick = function (e) {
+            e.preventDefault();
+            var url =
+              "http://localhost:5173/?map=" + encodeURIComponent(m.id);
+            try {
+              navigator.clipboard
+                .writeText(url)
+                .then(function () {
+                  setMapStatus("ссылка скопирована: " + url);
+                })
+                .catch(function () {
+                  window.prompt("Ссылка 3D от копии", url);
+                });
+            } catch (err) {
+              window.prompt("Ссылка 3D от копии", url);
+            }
+          };
+          row.appendChild(name);
+          row.appendChild(meta);
+          row.appendChild(link3d);
+          row.appendChild(linkSvg);
+          row.appendChild(linkCopy);
+          copiesListEl.appendChild(row);
+        });
+      })
+      .catch(function () {});
+  }
 
   buildLabels();
   measureGapPx();
@@ -4529,6 +5385,7 @@
     hideAuth();
     lastCatalog = { maps: me.maps || [] };
     renderMapList();
+    refreshCopies();
     var slug = me.last_slug || "";
     var found = null;
     (lastCatalog.maps || []).forEach(function (m) {
