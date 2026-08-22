@@ -147,6 +147,84 @@ def test_never_returns_is_noop() -> None:
         fail("open-ended exit must be None")
 
 
+def u_ring() -> list[tuple[float, float]]:
+    # C-shape opening to the right. Bay pocket around (40, 30) is beige.
+    return [
+        (0.0, 0.0),
+        (60.0, 0.0),
+        (60.0, 20.0),
+        (20.0, 20.0),
+        (20.0, 40.0),
+        (60.0, 40.0),
+        (60.0, 60.0),
+        (0.0, 60.0),
+    ]
+
+
+def test_seam_clamp_adds_only_gap_minus_five() -> None:
+    ring = square()
+    # neighbour starts at x=108 → gap 8px → budget 3px
+    neigh = [(108.0, 0.0), (200.0, 0.0), (200.0, 100.0), (108.0, 100.0)]
+    stroke = [(100.0, 40.0), (120.0, 55.0), (100.0, 80.0)]
+    ex = pg.extract_excursion(stroke, ring)
+    if ex is None:
+        fail("seam stroke should extract")
+    grown = pg.grow_mid(ex["mid"], ring, [neigh], gap=5.0)
+    peak = max(p[0] for p in grown)
+    if peak > 103.2:
+        fail("grew past 5px floor, peak x=%s" % peak)
+    if peak < 102.5:
+        fail("should use the 3px budget, peak x=%s" % peak)
+
+
+def test_seam_at_five_adds_zero() -> None:
+    ring = square()
+    neigh = [(105.0, 0.0), (200.0, 0.0), (200.0, 100.0), (105.0, 100.0)]
+    stroke = [(100.0, 40.0), (120.0, 55.0), (100.0, 80.0)]
+    ex = pg.extract_excursion(stroke, ring)
+    grown = pg.grow_mid(ex["mid"], ring, [neigh], gap=5.0)
+    peak = max(p[0] for p in grown)
+    if peak > 100.6:
+        fail("gap already 5, must add 0, peak x=%s" % peak)
+
+
+def test_void_outward_adds_zero() -> None:
+    ring = square()
+    stroke = [(100.0, 40.0), (130.0, 55.0), (100.0, 80.0)]
+    ex = pg.extract_excursion(stroke, ring)
+    grown = pg.grow_mid(ex["mid"], ring, [], gap=5.0)
+    peak = max(p[0] for p in grown)
+    if peak > 100.6:
+        fail("void peninsula must not add land, peak x=%s" % peak)
+
+
+def test_bay_keeps_drawn_fill() -> None:
+    ring = u_ring()
+    # close the C mouth with a slight chord in the pocket
+    stroke = [(60.0, 20.0), (40.0, 30.0), (60.0, 40.0)]
+    ex = pg.extract_excursion(stroke, ring)
+    if ex is None:
+        fail("bay stroke should extract")
+    grown = pg.grow_mid(ex["mid"], ring, [], gap=5.0)
+    xs = [p[0] for p in grown]
+    if min(xs) > 45:
+        fail("bay fill should keep the drawn pocket, xs=%s" % xs)
+
+
+def test_assemble_keeps_the_large_body() -> None:
+    ring = square()
+    stroke = [(100.0, 40.0), (103.0, 55.0), (100.0, 80.0)]
+    ex = pg.extract_excursion(stroke, ring)
+    grown = pg.grow_mid(ex["mid"], ring, [], gap=5.0)
+    new_ring = pg.assemble_ring(ring, ex["S"], ex["E"], grown)
+    if new_ring is None:
+        fail("assemble returned None")
+    a0 = abs(pg.signed_area(ring))
+    a1 = abs(pg.signed_area(new_ring))
+    if a1 < a0 * 0.5:
+        fail("assembled the ear instead of the body: %s vs %s" % (a1, a0))
+
+
 def main() -> None:
     test_inside_tails_are_dropped()
     test_substrate_tails_are_dropped()
@@ -155,7 +233,12 @@ def main() -> None:
     test_mid_graze_is_noop()
     test_all_inside_is_noop()
     test_never_returns_is_noop()
-    print("OK pen_geom excursion")
+    test_seam_clamp_adds_only_gap_minus_five()
+    test_seam_at_five_adds_zero()
+    test_void_outward_adds_zero()
+    test_bay_keeps_drawn_fill()
+    test_assemble_keeps_the_large_body()
+    print("OK pen_geom excursion + grow")
 
 
 if __name__ == "__main__":

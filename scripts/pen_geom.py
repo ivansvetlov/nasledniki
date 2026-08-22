@@ -180,3 +180,150 @@ def extract_excursion(stroke: Stroke, ring: Ring) -> Optional[dict]:
     if len(mid) < 2:
         return None
     return {"S": S, "E": E, "mid": mid, "s0": s0, "s1": s1}
+
+
+SEAM_GAP = 5.0
+FACE_MAX = 10.0  # FACE_MAX+SLACK in pair_geom: corridor, not Volga
+
+
+def signed_area(ring: Ring) -> float:
+    r = _closed(ring)
+    a = 0.0
+    n = len(r)
+    for i in range(n):
+        j = (i + 1) % n
+        a += r[i][0] * r[j][1] - r[j][0] * r[i][1]
+    return a / 2.0
+
+
+def closest_on_ring(p: Point, ring: Ring) -> tuple[Point, float, int, float]:
+    r = _closed(ring)
+    n = len(r)
+    best = (r[0], 0.0, 0, 1e18)
+    for i in range(n):
+        q, t, d = closest_on_seg(p, r[i], r[(i + 1) % n])
+        if d < best[3]:
+            best = (q, t, i, d)
+    return best
+
+
+def closest_on_rings(p: Point, rings: list[Ring]) -> Optional[tuple[Point, float]]:
+    best_q = None
+    best_d = 1e18
+    for ring in rings:
+        q, _, _, d = closest_on_ring(p, ring)
+        if d < best_d:
+            best_d = d
+            best_q = q
+    if best_q is None:
+        return None
+    return best_q, best_d
+
+
+def _cross(a: Point, b: Point, p: Point) -> float:
+    return (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0])
+
+
+def _centroid(ring: Ring) -> Point:
+    r = _closed(ring)
+    n = len(r) or 1
+    return (sum(p[0] for p in r) / n, sum(p[1] for p in r) / n)
+
+
+def _same_side_as_interior(p: Point, ring: Ring, S: Point, E: Point) -> bool:
+    sp = _cross(S, E, p)
+    si = _cross(S, E, _centroid(ring))
+    if abs(sp) < 1e-8:
+        return False
+    return (sp > 0) == (si > 0)
+
+
+def grow_mid(
+    mid: list[Point],
+    ring: Ring,
+    neighbors: list[Ring],
+    gap: float = SEAM_GAP,
+    face: float = FACE_MAX,
+) -> list[Point]:
+    """Per-point grow: seam clamps to gap, bay keeps the stroke, void adds 0."""
+    if len(mid) < 2:
+        return mid
+    S, E = mid[0], mid[-1]
+    out = [S]
+    for p in mid[1:-1]:
+        Q, _, _, _ = closest_on_ring(p, ring)
+        drawn = math.hypot(p[0] - Q[0], p[1] - Q[1])
+        hit = closest_on_rings(Q, neighbors) if neighbors else None
+        on_seam = False
+        budget = drawn
+        if hit is not None:
+            N, _ = hit
+            qn = math.hypot(Q[0] - N[0], Q[1] - N[1])
+            pn = closest_on_rings(p, neighbors)
+            pd = pn[1] if pn else 1e18
+            if qn <= face or pd <= face:
+                on_seam = True
+                budget = max(0.0, qn - gap)
+        if on_seam:
+            if drawn < 1e-9:
+                out.append(Q)
+            else:
+                t = min(1.0, budget / drawn)
+                out.append((Q[0] + (p[0] - Q[0]) * t, Q[1] + (p[1] - Q[1]) * t))
+        elif _same_side_as_interior(p, ring, S, E):
+            out.append(p)
+        else:
+            out.append(Q)
+    out.append(E)
+    return out
+
+
+def _walk_vertices(ring: Ring, i_from: int, i_to: int) -> list[Point]:
+    r = _closed(ring)
+    n = len(r)
+    pts: list[Point] = []
+    k = (i_from + 1) % n
+    guard = 0
+    while k != i_to and guard <= n:
+        pts.append(r[k])
+        k = (k + 1) % n
+        guard += 1
+    return pts
+
+
+def assemble_ring(
+    ring: Ring, S: Point, E: Point, new_mid: list[Point]
+) -> Optional[list[Point]]:
+    """Replace one border run with new_mid. Keep the large same-orientation body."""
+    r = _closed(ring)
+    if len(r) < 3 or len(new_mid) < 2:
+        return None
+    _, _, iS, _ = closest_on_ring(S, r)
+    _, _, iE, _ = closest_on_ring(E, r)
+    n = len(r)
+    if iS == iE:
+        around = r[iS + 1 :] + r[: iS + 1]
+        cands = [new_mid + around, list(new_mid)]
+    else:
+        cands = [
+            new_mid + _walk_vertices(r, iE, iS),
+            list(reversed(new_mid)) + _walk_vertices(r, iS, iE),
+        ]
+    orig = signed_area(r)
+    orig_sign = orig >= 0
+    best = None
+    best_a = -1.0
+    for cand in cands:
+        if len(cand) < 4:
+            continue
+        a = signed_area(cand)
+        if (a >= 0) != orig_sign:
+            continue
+        if abs(a) > best_a:
+            best_a = abs(a)
+            best = cand
+    if best is None or best_a < abs(orig) * 0.45:
+        return None
+    return best
+
+
