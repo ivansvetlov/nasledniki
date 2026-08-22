@@ -3017,6 +3017,12 @@
       return pathVisible(p) && !isWaterPath(p);
     });
   }
+  function pathByName(name) {
+    var list = districtPaths();
+    for (var i = 0; i < list.length; i++)
+      if (list[i].getAttribute("data-name") === name) return list[i];
+    return null;
+  }
   function pathRing(p) {
     if (!p) return null;
     var rings = parseD(p.getAttribute("d"));
@@ -3108,12 +3114,32 @@
       if (Math.hypot(seamPins[i].x - hit.x, seamPins[i].y - hit.y) < r)
         return seamPins[i];
     }
+    var body = hit.name;
+    var sx = hit.x,
+      sy = hit.y;
+    var seen = {};
+    var bestD = 12;
+    for (var i = 0; i < seamPins.length; i++) {
+      var red = seamPins[i];
+      if (red.kind !== "red" || !red.name || seen[red.name]) continue;
+      seen[red.name] = 1;
+      var pr = pathByName(red.name);
+      var ring = pathRing(pr);
+      if (!ring) continue;
+      var c = closestOnRingIdx([hit.x, hit.y], ring);
+      if (c && c.d < bestD) {
+        bestD = c.d;
+        body = red.name;
+        sx = c.x;
+        sy = c.y;
+      }
+    }
     var pin = {
       id: ++pinSeq,
       kind: "red",
-      x: hit.x,
-      y: hit.y,
-      name: hit.name,
+      x: sx,
+      y: sy,
+      name: body,
     };
     seamPins.push(pin);
     return pin;
@@ -3195,6 +3221,7 @@
     for (var i = 0; i < keyed.length; i++) {
       var A = keyed[i];
       var B = keyed[(i + 1) % keyed.length];
+      if (A.pin.name && B.pin.name && A.pin.name !== B.pin.name) continue;
       var inside;
       if (A.k <= B.k) inside = yk >= A.k && yk <= B.k;
       else inside = yk >= A.k || yk <= B.k;
@@ -3205,37 +3232,69 @@
       var d = distToOpen(at, walk);
       if (d < hitD) {
         hitD = d;
-        hit = { s: s, e: e };
+        hit = { s: s, e: e, walk: walk, name: A.pin.name || B.pin.name };
       }
     }
     return hit;
   }
-  function lockGrowSide(seam, yellow, origin) {
-    var a = seam.nameA,
-      b = seam.nameB;
-    if (target === a || target === b) {
-      return target === a
-        ? { grow: a, shrink: b, pathG: seam.pathA, pathS: seam.pathB }
-        : { grow: b, shrink: a, pathG: seam.pathB, pathS: seam.pathA };
+  function closestOnOpen(p, pts) {
+    var best = pts && pts[0] ? pts[0] : p,
+      bestD = 1e9;
+    if (!pts || pts.length < 2) return { q: best, d: bestD };
+    for (var i = 0; i + 1 < pts.length; i++) {
+      var c = closestOnSeg(p, pts[i], pts[i + 1]);
+      if (c.d < bestD) {
+        bestD = c.d;
+        best = [c.x, c.y];
+      }
     }
-    var ox = origin ? origin[0] : yellow[0];
-    var oy = origin ? origin[1] : yellow[1];
-    var vx = yellow[0] - ox,
-      vy = yellow[1] - oy;
-    var cA = penCentroid(seam.ringA),
-      cB = penCentroid(seam.ringB);
-    if (Math.hypot(vx, vy) < 1) {
-      var dA = Math.hypot(yellow[0] - cA[0], yellow[1] - cA[1]);
-      var dB = Math.hypot(yellow[0] - cB[0], yellow[1] - cB[1]);
-      if (dA > dB)
-        return { grow: a, shrink: b, pathG: seam.pathA, pathS: seam.pathB };
-      return { grow: b, shrink: a, pathG: seam.pathB, pathS: seam.pathA };
+    return { q: best, d: bestD };
+  }
+  function arcNearPoint(ring, s, e, p) {
+    var r = stripClosed(ring);
+    var cS = closestOnRingIdx(s, r);
+    var cE = closestOnRingIdx(e, r);
+    if (!cS || !cE) return [s, e];
+    var fwd = [s].concat(walkVerts(r, cS.idx, cE.idx), [e]);
+    var bwd = [s].concat(walkBack(r, cS.idx, cE.idx), [e]);
+    return distToOpen(p, fwd) <= distToOpen(p, bwd) ? fwd : bwd;
+  }
+  function findEditZone(at) {
+    var reds = seamPins.filter(function (p) {
+      return p.kind === "red";
+    });
+    var by = {};
+    for (var i = 0; i < reds.length; i++) {
+      var n = reds[i].name || "";
+      if (!by[n]) by[n] = [];
+      by[n].push(reds[i]);
     }
-    var sA = (cA[0] - ox) * vx + (cA[1] - oy) * vy;
-    var sB = (cB[0] - ox) * vx + (cB[1] - oy) * vy;
-    if (sA > sB)
-      return { grow: b, shrink: a, pathG: seam.pathB, pathS: seam.pathA };
-    return { grow: a, shrink: b, pathG: seam.pathA, pathS: seam.pathB };
+    var best = null,
+      bestD = 16;
+    var names = Object.keys(by);
+    var nReds = 0;
+    for (var k = 0; k < names.length; k++) {
+      nReds = Math.max(nReds, by[names[k]].length);
+      if (by[names[k]].length < 2) continue;
+      var path = pathByName(names[k]);
+      var ring = pathRing(path);
+      if (!ring) continue;
+      var pair = consecutiveRedPair(ring, at, by[names[k]]);
+      if (!pair) continue;
+      var d = distToOpen(at, pair.walk);
+      if (d < bestD) {
+        bestD = d;
+        best = {
+          s: pair.s,
+          e: pair.e,
+          name: names[k],
+          path: path,
+          ring: ring,
+          walk: pair.walk,
+        };
+      }
+    }
+    return { zone: best, nReds: nReds };
   }
   function ensurePinsSvg() {
     var s = document.getElementById("pins");
@@ -3297,6 +3356,13 @@
     ribbonDrag = null;
     renderPins();
   }
+  function yellowOnGrowBody(cursor) {
+    if (!ribbonDrag) return cursor;
+    var ring = pathRing(ribbonDrag.pathG) || ribbonDrag.ringG;
+    var arc = arcNearPoint(ring, ribbonDrag.s, ribbonDrag.e, cursor);
+    var hit = closestOnOpen(cursor, arc);
+    return hit.q || cursor;
+  }
   function applyRibbonFrame(yellow) {
     if (!ribbonDrag || !ribbonDrag.s || !ribbonDrag.e) return false;
     var out = deformPair(
@@ -3322,89 +3388,104 @@
   }
   function beginRibbonDrag(e, seam, pt, originPt, fixedEnds) {
     if (!seam) return;
-    var yellow = [pt.x, pt.y];
+    var cursor = [pt.x, pt.y];
     var origin = originPt
       ? [originPt.x, originPt.y]
       : [seam.x, seam.y];
-    var reds = redsNearPair(
-      seam.ringA,
-      seam.ringB,
-      seamPins.filter(function (p) {
-        return p.kind === "red";
-      })
-    );
-    var ends = fixedEnds || consecutiveRedPair(seam.ringA, origin, reds);
-    if (!ends) {
+    var found = findEditZone(origin);
+    var zone = found.zone;
+    if (fixedEnds && fixedEnds.s && fixedEnds.e && seam.nameA) {
+      var bodyPath = pathByName(seam.nameA);
+      zone = {
+        s: fixedEnds.s,
+        e: fixedEnds.e,
+        name: seam.nameA,
+        path: bodyPath,
+        ring: pathRing(bodyPath),
+        walk: walkShort(pathRing(bodyPath) || seam.ringA, fixedEnds.s, fixedEnds.e),
+      };
+    }
+    if (!zone) {
       if (hint)
         hint.textContent =
-          reds.length < 2
+          found.nReds < 2
             ? "нужны две красные по краям участка"
             : "жёлтая только между двумя соседними красными";
       return;
     }
-    var side = lockGrowSide(seam, yellow, origin);
-    var ringG = pathRing(side.pathG);
-    var ringS = pathRing(side.pathS);
+    var mid = [
+      (zone.s[0] + zone.e[0]) / 2,
+      (zone.s[1] + zone.e[1]) / 2,
+    ];
+    var nb = neighborAcross(
+      { path: zone.path, x: mid[0], y: mid[1] },
+      PEN_FACE + 4
+    );
+    if (!nb || nb.name === zone.name) {
+      if (hint) hint.textContent = "это не шов — внешний край не тянем";
+      return;
+    }
+    var ringG = zone.ring;
+    var ringS = nb.ring;
     if (!ringG || !ringS) return;
     ignoreClicksUntil = Date.now() + 800;
     ribbonDrag = {
-      pathG: side.pathG,
-      pathS: side.pathS,
-      dG: side.pathG.getAttribute("d"),
-      dS: side.pathS.getAttribute("d"),
+      pathG: zone.path,
+      pathS: nb.path,
+      dG: zone.path.getAttribute("d"),
+      dS: nb.path.getAttribute("d"),
       ringG: ringG,
       ringS: ringS,
-      nameG: side.grow,
-      nameS: side.shrink,
-      side: side,
+      nameG: zone.name,
+      nameS: nb.name,
       snapped: false,
-      s: ends.s,
-      e: ends.e,
+      s: zone.s,
+      e: zone.e,
     };
-    var ypin = setYellow(pt.x, pt.y, side.grow, side.shrink);
-    ypin.s = ends.s;
-    ypin.e = ends.e;
+    var onBody = closestOnOpen(origin, zone.walk);
+    var ypin = setYellow(onBody.q[0], onBody.q[1], zone.name, nb.name);
+    ypin.s = zone.s;
+    ypin.e = zone.e;
+    ypin.nameA = zone.name;
+    ypin.nameB = nb.name;
     ribbonDrag.yellow = ypin;
-    snapshotPaths("шов · " + short(side.grow));
+    snapshotPaths("шов · " + short(zone.name));
     ribbonDrag.snapped = true;
-    if (!applyRibbonFrame(yellow)) {
+    if (!applyRibbonFrame(cursor)) {
       discardLastUndo();
       ribbonDrag = null;
       if (hint) hint.textContent = "это не шов — внешний край не тянем";
       renderPins();
       return;
     }
+    var vis = yellowOnGrowBody(cursor);
+    setYellow(vis[0], vis[1], zone.name, nb.name);
     try {
       viewport.setPointerCapture(e.pointerId);
     } catch (err) {}
     if (hint)
       hint.textContent =
-        "тянем шов → " + short(side.grow) + " растёт, " + short(side.shrink) + " худеет";
+        "тянем шов → " + short(zone.name) + " растёт, " + short(nb.name) + " худеет";
     renderPins();
   }
   function beginRibbonFromPin(e, pin) {
     var p = { x: pin.x, y: pin.y };
-    var seam = pickSeamAt(p);
-    if (!seam && pin.nameA && pin.nameB) {
-      var pA = null,
-        pB = null;
-      districtPaths().forEach(function (pp) {
-        var n = pp.getAttribute("data-name");
-        if (n === pin.nameA) pA = pp;
-        if (n === pin.nameB) pB = pp;
-      });
-      if (pA && pB)
-        seam = {
-          pathA: pA,
-          nameA: pin.nameA,
-          ringA: pathRing(pA),
-          pathB: pB,
-          nameB: pin.nameB,
-          ringB: pathRing(pB),
-          x: pin.x,
-          y: pin.y,
-        };
-    }
+    var bodyName = pin.nameA;
+    var pA = pathByName(bodyName);
+    var pB = pathByName(pin.nameB);
+    var seam = null;
+    if (pA && pB)
+      seam = {
+        pathA: pA,
+        nameA: bodyName,
+        ringA: pathRing(pA),
+        pathB: pB,
+        nameB: pin.nameB,
+        ringB: pathRing(pB),
+        x: pin.x,
+        y: pin.y,
+      };
+    if (!seam) seam = pickSeamAt(p);
     if (!seam) return;
     var fixed =
       pin.s && pin.e ? { s: pin.s, e: pin.e } : null;
@@ -3413,8 +3494,9 @@
   function moveRibbon(e) {
     if (!ribbonDrag) return;
     var pt = pos(e);
-    setYellow(pt.x, pt.y, ribbonDrag.nameG, ribbonDrag.nameS);
     applyRibbonFrame([pt.x, pt.y]);
+    var vis = yellowOnGrowBody([pt.x, pt.y]);
+    setYellow(vis[0], vis[1], ribbonDrag.nameG, ribbonDrag.nameS);
     renderPins();
   }
   function endRibbon(e) {
