@@ -1,0 +1,20 @@
+#!/bin/sh
+# Pre-commit gate: блокирует коммит, если нарушены инварианты карты samara.
+# Активируется один раз: git config core.hooksPath hooks
+ROOT="$(git rev-parse --show-toplevel)"
+PYTHON="${PYTHON:-python}"
+command -v "$PYTHON" >/dev/null 2>&1 || PYTHON=py
+
+changed="$(git diff --cached --name-only)"
+if printf '%s\n' "$changed" | grep -qE 'map\.svg$|map_editor\.js|verify_map_good\.py|\.good$'; then
+  echo "[pre-commit] меняются файлы карты — запускаю verify_map_good.py"
+  "$PYTHON" "$ROOT/scripts/verify_map_good.py"
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    echo "[pre-commit] ЗАБЛОКИРОВАНО: инварианты карты нарушены."
+    echo "              Исправь карту или перебазируй эталон (copy map.svg map.svg.good), затем коммить."
+    exit 1
+  fi
+  echo "[pre-commit] инварианты карты OK"
+fi
+exit 0
