@@ -68,8 +68,12 @@
   var selectedObj = null;
   var seamPins = [];
   var pinSeq = 0;
-  var pendingRibbon = null;
-  var ribbonDrag = null;
+  var TOPO = { nodes: [], sharedEdges: [], outerEdges: [], built: false };
+  var topoDrag = null;
+  var pendingTopo = null;
+  var topoSeq = 0;
+  var lastDLengths = {};
+
 
   function paths() {
     return Array.prototype.slice.call(
@@ -235,16 +239,16 @@
       if (e.button !== 0) return;
       if (mode === "pick" && !handSticky && !space && !e.altKey) {
         var rp = pos(e);
-        var hitPin = hitSeamPin(rp);
-        if (hitPin && hitPin.kind === "yellow") {
+        var hitPin = topoHitPin(rp);
+        if (hitPin && !hitPin.isLocked) {
           pendingTap = false;
           pendingHand = false;
           lastTap = 0;
-          beginRibbonFromPin(e, hitPin);
+          beginTopoDragFromYellow(e, hitPin);
           return;
         }
-        var seam0 = pickSeamAt(rp);
-        if (seam0) pendingRibbon = { seam: seam0, x: rp.x, y: rp.y };
+        var zone = topoZoneAt(rp);
+        if (zone) pendingTopo = zone;
       }
       var now = Date.now();
       var slop = e.pointerType === "touch" ? 44 : 32;
@@ -293,17 +297,17 @@
       startDragPan(e);
       return;
     }
-    if (ribbonDrag) {
+    if (topoDrag) {
       e.preventDefault();
-      moveRibbon(e);
+      moveTopoDrag(e);
       return;
     }
-    if (pendingRibbon && press.maxd > 6 && mode === "pick" && !panning) {
+    if (pendingTopo && press.maxd > 6 && mode === "pick" && !panning) {
       pendingTap = false;
       pendingHand = false;
       lastTap = 0;
-      beginRibbonDrag(e, pendingRibbon.seam, pos(e), pendingRibbon);
-      pendingRibbon = null;
+      beginTopoDrag(e, pendingTopo);
+      pendingTopo = null;
       return;
     }
     if (mode === "ruler" && ruler.live && !panning && !isChrome(e.target)) {
@@ -333,13 +337,13 @@
   function onViewportUp(e) {
     if (textDrag) textDrag = null;
     pendingHand = false;
-    if (ribbonDrag) {
-      endRibbon(e);
+    if (topoDrag) {
+      endTopoDrag(e);
       press.t = 0;
-      pendingRibbon = null;
+      pendingTopo = null;
       return;
     }
-    pendingRibbon = null;
+    pendingTopo = null;
     if (panning) {
       endPan(e);
       press.t = 0;
@@ -384,6 +388,14 @@
       e.preventDefault();
       redo();
     }
+    if (
+      (e.ctrlKey || e.metaKey) &&
+      (e.code === "KeyS" || e.key === "s" || e.key === "S" || e.key === "ы" || e.key === "Ы")
+    ) {
+      e.preventDefault();
+      saveDirty = true;
+      flushSave();
+    }
     if (e.code === "KeyV") {
       e.preventDefault();
       setMode("pick");
@@ -421,7 +433,7 @@
         hideCtx();
         return;
       }
-      if (ribbonDrag) {
+      if (topoDrag) {
         cancelRibbon();
         return;
       }
@@ -1054,24 +1066,40 @@
       return;
     }
     if (isChrome(t)) return;
-    var pHit = pos(e);
-    var pinHit = hitSeamPin(pHit);
-    if (pinHit) {
-      removeSeamPin(pinHit);
-      renderPins();
-      if (hint)
-        hint.textContent =
-          pinHit.kind === "yellow" ? "жёлтая снята" : "якорь снят";
-      return;
-    }
-    var borderHit = nearestDistrictBorder(pHit, 12 / (pan.s || 1));
-    if (borderHit) {
-      addRedPin(borderHit);
-      renderPins();
-      if (hint)
-        hint.textContent =
-          "якорь · ещё одна красная по краю участка, ЛКМ между ними — жёлтая";
-      return;
+    if (mode === "pick") {
+      var pHit = pos(e);
+      var pinHit = topoHitPin(pHit);
+      if (pinHit) {
+        topoRemovePin(pinHit);
+        renderPins();
+        if (hint)
+          hint.textContent = pinHit.isLocked ? "якорь снят" : "жёлтая снята";
+        return;
+      }
+      var pickHit = hitSvgAt(e);
+      var pickKind =
+        pickHit && pickHit.closest && pickHit.closest("text[data-kind],path[data-kind]");
+      var pickName = zoneAtEvent(e);
+      if (pickKind) {
+        selectDistrict(null, false);
+        selectObj(pickKind);
+        showObjectCtx(e.clientX, e.clientY, pickKind);
+        return;
+      }
+      if (pickName) {
+        var pickMap = pos(e);
+        showZoneCtx(e.clientX, e.clientY, pickName, pickMap.x, pickMap.y);
+        return;
+      }
+      var edgeHit = topoFindEdgeAt(pHit);
+      if (edgeHit) {
+        topoAddRedPin(edgeHit.edge, edgeHit.t);
+        renderPins();
+        if (hint)
+          hint.textContent =
+            "якорь · ещё одна красная по краю участка, ЛКМ между ними — жёлтая";
+        return;
+      }
     }
     var hit = hitSvgAt(e);
     var kindEl =
@@ -1689,6 +1717,13 @@
     if (last.type === "stroke") {
       redoStack.push({ type: "stroke", data: ctx.getImageData(0, 0, W, H) });
       ctx.putImageData(last.data, 0, 0);
+    } else if (last.type === "topo") {
+      redoStack.push({ type: "topo", id: last.id, label: last.label, topo: topoSnapshot() });
+      topoRestore(last.topo);
+      topoRerenderAll();
+      buildLabels();
+      renderPins();
+      topoLog("UNDO", "Action undone. Restored TOPO state. Total spline points in RAM: " + topoSplinePointCount() + ". Triggering re-render...");
     } else {
       redoStack.push(captureState(last.label, last.id));
       restoreSnapshot(last.snap);
@@ -1715,6 +1750,13 @@
     if (last.type === "stroke") {
       undoStack.push({ type: "stroke", data: ctx.getImageData(0, 0, W, H) });
       ctx.putImageData(last.data, 0, 0);
+    } else if (last.type === "topo") {
+      undoStack.push({ type: "topo", id: last.id, label: last.label, topo: topoSnapshot() });
+      topoRestore(last.topo);
+      topoRerenderAll();
+      buildLabels();
+      renderPins();
+      topoLog("UNDO", "Action redone. Restored TOPO state. Total spline points in RAM: " + topoSplinePointCount() + ".");
     } else {
       undoStack.push(captureState(last.label, last.id));
       restoreSnapshot(last.snap);
@@ -2704,324 +2746,6 @@
       r.pop();
     return r;
   }
-  function quadraticPts(s, y, e, n) {
-    n = n || 24;
-    if (n < 2) n = 2;
-    var pts = [];
-    for (var i = 0; i <= n; i++) {
-      var t = i / n,
-        u = 1 - t;
-      pts.push([
-        u * u * s[0] + 2 * u * t * y[0] + t * t * e[0],
-        u * u * s[1] + 2 * u * t * y[1] + t * t * e[1],
-      ]);
-    }
-    return pts;
-  }
-  function offsetOpen(pts, dist, toward) {
-    if (!pts || pts.length < 2) return pts ? pts.slice() : [];
-    var nrms = [];
-    for (var i = 0; i < pts.length; i++) {
-      var a, b;
-      if (i === 0) {
-        a = pts[0];
-        b = pts[1];
-      } else if (i === pts.length - 1) {
-        a = pts[pts.length - 2];
-        b = pts[pts.length - 1];
-      } else {
-        a = pts[i - 1];
-        b = pts[i + 1];
-      }
-      var vx = b[0] - a[0],
-        vy = b[1] - a[1];
-      var ln = Math.hypot(vx, vy) || 1;
-      nrms.push([-vy / ln, vx / ln]);
-    }
-    var p0 = pts[(pts.length / 2) | 0];
-    var n0 = nrms[(nrms.length / 2) | 0];
-    var dpos = Math.hypot(p0[0] + n0[0] - toward[0], p0[1] + n0[1] - toward[1]);
-    var dneg = Math.hypot(p0[0] - n0[0] - toward[0], p0[1] - n0[1] - toward[1]);
-    var sgn = dpos < dneg ? 1 : -1;
-    var out = [];
-    for (var k = 0; k < pts.length; k++)
-      out.push([
-        pts[k][0] + sgn * nrms[k][0] * dist,
-        pts[k][1] + sgn * nrms[k][1] * dist,
-      ]);
-    return out;
-  }
-  function densifyOpen(pts, step) {
-    step = step || 2;
-    if (!pts || pts.length < 2) return pts ? pts.slice() : [];
-    var out = [pts[0]];
-    for (var i = 0; i + 1 < pts.length; i++) {
-      var a = pts[i],
-        b = pts[i + 1];
-      var d = Math.hypot(b[0] - a[0], b[1] - a[1]);
-      var n = Math.max(1, Math.round(d / step));
-      for (var k = 1; k <= n; k++) {
-        var t = k / n;
-        out.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]);
-      }
-    }
-    return out;
-  }
-  function pullWalk(walk, yellow) {
-    if (!walk || walk.length < 2) return walk ? walk.slice() : [];
-    var acc = [0];
-    for (var i = 1; i < walk.length; i++)
-      acc.push(
-        acc[i - 1] +
-          Math.hypot(walk[i][0] - walk[i - 1][0], walk[i][1] - walk[i - 1][1])
-      );
-    var L = acc[acc.length - 1] || 1;
-    var tHit = 0.5,
-      best = 1e9;
-    for (var i = 0; i + 1 < walk.length; i++) {
-      var c = closestOnSeg(yellow, walk[i], walk[i + 1]);
-      if (c.d < best) {
-        best = c.d;
-        var seg =
-          Math.hypot(
-            walk[i + 1][0] - walk[i][0],
-            walk[i + 1][1] - walk[i][1]
-          ) || 1;
-        tHit = (acc[i] + c.t * seg) / L;
-      }
-    }
-    if (tHit < 0.02) tHit = 0.02;
-    if (tHit > 0.98) tHit = 0.98;
-    var hitQ = closestOnOpen(yellow, walk).q;
-    var vx = yellow[0] - hitQ[0];
-    var vy = yellow[1] - hitQ[1];
-    var out = [];
-    for (var i = 0; i < walk.length; i++) {
-      var t = acc[i] / L;
-      var w = t <= tHit ? t / tHit : (1 - t) / (1 - tHit);
-      w = w * w * (3 - 2 * w);
-      out.push([walk[i][0] + vx * w, walk[i][1] + vy * w]);
-    }
-    out[0] = [walk[0][0], walk[0][1]];
-    out[out.length - 1] = [
-      walk[walk.length - 1][0],
-      walk[walk.length - 1][1],
-    ];
-    return out;
-  }
-  function closestOnPoly(p, pts, closed) {
-    var best = { q: pts[0], d: 1e9 };
-    var n = pts.length;
-    var last = closed ? n : n - 1;
-    for (var i = 0; i < last; i++) {
-      var c = closestOnSeg(p, pts[i], pts[(i + 1) % n]);
-      if (c.d < best.d) best = { q: [c.x, c.y], d: c.d };
-    }
-    return best;
-  }
-  function pushOff(pts, other, gap, asRing) {
-    if (!pts || pts.length < 2 || !other || other.length < 2) return pts;
-    var out = pts.slice();
-    var ring = asRing ? stripClosed(other) : other;
-    for (var i = 1; i < out.length - 1; i++) {
-      var c = closestOnPoly(out[i], ring, !!asRing);
-      if (c.d < 1e-6) continue;
-      var inside = asRing && pointInRing(out[i], ring);
-      if (!inside && c.d + 1e-6 >= gap) continue;
-      var ux = (out[i][0] - c.q[0]) / c.d;
-      var uy = (out[i][1] - c.q[1]) / c.d;
-      if (inside) {
-        ux = -ux;
-        uy = -uy;
-      }
-      out[i] = [c.q[0] + ux * gap, c.q[1] + uy * gap];
-    }
-    return out;
-  }
-  function walkBack(ring, iFrom, iTo) {
-    var pts = [];
-    var n = ring.length;
-    var k = (iFrom - 1 + n) % n;
-    var guard = 0;
-    while (k !== iTo && guard <= n) {
-      pts.push(ring[k]);
-      k = (k - 1 + n) % n;
-      guard++;
-    }
-    return pts;
-  }
-  function replaceFacingArc(ring, s, e, newPts, near) {
-    var r = stripClosed(ring);
-    if (r.length < 3 || !newPts || newPts.length < 2) return null;
-    var cS = closestOnRingIdx(s, r);
-    var cE = closestOnRingIdx(e, r);
-    if (!cS || !cE) return null;
-    var iS = cS.idx,
-      iE = cE.idx;
-    var cand;
-    if (iS === iE) {
-      var nR = r.length;
-      var iN = (iS + 1) % nR;
-      var around;
-      if (
-        Math.hypot(e[0] - r[iS][0], e[1] - r[iS][1]) <=
-        Math.hypot(e[0] - r[iN][0], e[1] - r[iN][1])
-      )
-        around = [r[iS]].concat(walkBack(r, iS, iN), [r[iN]]);
-      else around = [r[iN]].concat(walkVerts(r, iN, iS), [r[iS]]);
-      cand = newPts.concat(around);
-      var orig0 = signedArea(r);
-      if (signedArea(cand) >= 0 !== orig0 >= 0) cand = cand.slice().reverse();
-    } else {
-      var arcF = [s].concat(walkVerts(r, iS, iE), [e]);
-      var arcB = [s].concat(walkBack(r, iS, iE), [e]);
-      function amid(arc) {
-        return arc[(arc.length / 2) | 0];
-      }
-      var mf = amid(arcF),
-        mb = amid(arcB);
-      var df = Math.hypot(mf[0] - near[0], mf[1] - near[1]);
-      var db = Math.hypot(mb[0] - near[0], mb[1] - near[1]);
-      var other = df <= db ? arcB : arcF;
-      cand = newPts.slice(0, -1).concat(other.slice().reverse());
-    }
-    var orig = signedArea(r);
-    if (signedArea(cand) >= 0 !== orig >= 0) cand = cand.slice().reverse();
-    if (cand.length < 4) return null;
-    return cand;
-  }
-  function signedNormals(pts, toward) {
-    if (!pts || pts.length < 2) return [];
-    var nrms = [];
-    for (var i = 0; i < pts.length; i++) {
-      var a, b;
-      if (i === 0) {
-        a = pts[0];
-        b = pts[1];
-      } else if (i === pts.length - 1) {
-        a = pts[pts.length - 2];
-        b = pts[pts.length - 1];
-      } else {
-        a = pts[i - 1];
-        b = pts[i + 1];
-      }
-      var vx = b[0] - a[0],
-        vy = b[1] - a[1];
-      var ln = Math.hypot(vx, vy) || 1;
-      nrms.push([-vy / ln, vx / ln]);
-    }
-    var p0 = pts[(pts.length / 2) | 0];
-    var n0 = nrms[(nrms.length / 2) | 0];
-    var dpos = Math.hypot(p0[0] + n0[0] - toward[0], p0[1] + n0[1] - toward[1]);
-    var dneg = Math.hypot(p0[0] - n0[0] - toward[0], p0[1] - n0[1] - toward[1]);
-    var sgn = dpos < dneg ? 1 : -1;
-    return nrms.map(function (n) {
-      return [sgn * n[0], sgn * n[1]];
-    });
-  }
-  function blend01(t, edge) {
-    edge = edge == null ? 0.14 : edge;
-    if (edge <= 0) return 1;
-    var x = Math.min(t, 1 - t) / edge;
-    if (x <= 0) return 0;
-    if (x >= 1) return 1;
-    return x * x * (3 - 2 * x);
-  }
-  function buildMidline(arcA, ringB) {
-    if (!arcA || arcA.length < 2) return null;
-    var mid = [];
-    var halfs = [];
-    var far = 0;
-    for (var i = 0; i < arcA.length; i++) {
-      var q = closestOnRing(arcA[i], ringB);
-      var d = Math.hypot(arcA[i][0] - q[0], arcA[i][1] - q[1]);
-      mid.push([(arcA[i][0] + q[0]) * 0.5, (arcA[i][1] + q[1]) * 0.5]);
-      halfs.push(d * 0.5);
-      if (d > 14) far++;
-    }
-    if (far > Math.max(2, (arcA.length / 3) | 0)) return null;
-    return { mid: mid, halfs: halfs };
-  }
-  function emitFromMidline(mid, halfs, gap, towardA) {
-    var nrms = signedNormals(mid, towardA);
-    var n = mid.length;
-    var arcA = [];
-    var arcB = [];
-    var target = gap * 0.5;
-    for (var i = 0; i < n; i++) {
-      var t = n > 1 ? i / (n - 1) : 0;
-      var w = blend01(t);
-      var h0 = i < halfs.length ? halfs[i] : target;
-      var half = h0 * (1 - w) + target * w;
-      var nx = nrms[i][0],
-        ny = nrms[i][1];
-      arcA.push([mid[i][0] + nx * half, mid[i][1] + ny * half]);
-      arcB.push([mid[i][0] - nx * half, mid[i][1] - ny * half]);
-    }
-    return { A: arcA, B: arcB };
-  }
-  function interpolatingQuadratic(s, y, e, n) {
-    n = n || 28;
-    var vx = e[0] - s[0],
-      vy = e[1] - s[1];
-    var l2 = vx * vx + vy * vy || 1;
-    var t = ((y[0] - s[0]) * vx + (y[1] - s[1]) * vy) / l2;
-    t = Math.max(0.1, Math.min(0.9, t));
-    var u = 1 - t;
-    var den = 2 * u * t;
-    var ctrl = [
-      (y[0] - u * u * s[0] - t * t * e[0]) / den,
-      (y[1] - u * u * s[1] - t * t * e[1]) / den,
-    ];
-    return quadraticPts(s, ctrl, e, n);
-  }
-  function deformPair(ringA, ringB, s, e, yellow, gap, walkA) {
-    gap = gap == null ? SEAM_GAP : gap;
-    var arcA = interpolatingQuadratic(s, yellow, e, 28);
-    arcA[0] = s;
-    arcA[arcA.length - 1] = e;
-    var arcB = offsetOpen(arcA, gap, penCentroid(ringB));
-    var sb = closestOnRing(s, ringB);
-    var eb = closestOnRing(e, ringB);
-    var n = arcB.length;
-    for (var i = 0; i < n; i++) {
-      var t = n > 1 ? i / (n - 1) : 0;
-      var w = blend01(t);
-      var ex = sb[0] * (1 - t) + eb[0] * t;
-      var ey = sb[1] * (1 - t) + eb[1] * t;
-      arcB[i] = [arcB[i][0] * w + ex * (1 - w), arcB[i][1] * w + ey * (1 - w)];
-    }
-    arcB[0] = sb;
-    arcB[arcB.length - 1] = eb;
-    var a2 = replaceFacingArc(ringA, s, e, arcA, yellow);
-    var b2 = replaceFacingArc(ringB, sb, eb, arcB, yellow);
-    if (a2 && b2) {
-      a2 = clampRingGap(a2, b2, s, e, gap);
-      b2 = clampRingGap(b2, a2, sb, eb, gap);
-    }
-    return { A: a2, B: b2 };
-  }
-  function clampRingGap(ring, other, s, e, gap) {
-    var out = ring.slice();
-    var o = stripClosed(other);
-    for (var i = 0; i < out.length; i++) {
-      var p = out[i];
-      if (Math.hypot(p[0] - s[0], p[1] - s[1]) < 8) continue;
-      if (Math.hypot(p[0] - e[0], p[1] - e[1]) < 8) continue;
-      var c = closestOnPoly(p, o, true);
-      if (c.d < 1e-6) continue;
-      var inside = pointInRing(p, o);
-      if (!inside && c.d + 1e-6 >= gap) continue;
-      var ux = (p[0] - c.q[0]) / c.d;
-      var uy = (p[1] - c.q[1]) / c.d;
-      if (inside) {
-        ux = -ux;
-        uy = -uy;
-      }
-      out[i] = [c.q[0] + ux * gap, c.q[1] + uy * gap];
-    }
-    return out;
-  }
   function vectorDoodle(target, pts) {
     var p = null;
     paths().forEach(function (pp) {
@@ -3036,7 +2760,8 @@
     var neighbors = [];
     paths().forEach(function (pp) {
       if (lid(pp) === tid || !pathVisible(pp)) return;
-      if (pp.closest && pp.closest("#water")) return;
+      if (pp.closest && (pp.closest("#water") || pp.closest("#water-overlay")))
+        return;
       var rr = parseD(pp.getAttribute("d"));
       if (rr[0] && rr[0].length >= 3) neighbors.push(rr[0]);
     });
@@ -3197,7 +2922,11 @@
   }
 
   function isWaterPath(p) {
-    return !!(p && p.closest && p.closest("#water"));
+    return !!(
+      p &&
+      p.closest &&
+      (p.closest("#water") || p.closest("#water-overlay"))
+    );
   }
   function districtPaths() {
     return paths().filter(function (p) {
@@ -3210,280 +2939,837 @@
       if (list[i].getAttribute("data-name") === name) return list[i];
     return null;
   }
-  function pathRing(p) {
-    if (!p) return null;
-    var rings = parseD(p.getAttribute("d"));
-    if (!rings.length) return null;
-    return stripClosed(rings[largestRingIx(rings)]);
+  // =====================================================================
+  // Shared Spline topology (v2)
+  // Source of truth = midline splines. 5px seam = +-2.5px offset.
+  // Water lives on its own layer and is fully ignored here.
+  // =====================================================================
+
+  var SPLINE_OFFSET = SEAM_GAP / 2; // 2.5px
+  var SPLINE_SAMPLE = 2; // px along spline when rendering
+  var PICK_TOL = 14; // px (screen), hit radius for pins / splines
+  // Shared-edge detection: a vertex of one ring is "on the seam" when it is
+  // within SEAM_DETECT_TOL of the other ring. No hole-closing, no merging:
+  // each contiguous facing run = one SharedEdge, split strictly at nodes.
+  var SEAM_DETECT_TOL = 6; // px; matches the +-2.5px bank separation (5px seam) + margin
+  var MIN_RUN = 3; // minimum facing vertices for a run to count as a shared edge
+
+  function topoLog(tag, msg) {
+    console.log("[" + tag + "] " + msg);
   }
-  function pinHitR() {
-    return 10 / (pan.s || 1);
-  }
-  function hitSeamPin(p) {
-    var r = pinHitR();
-    var best = null,
-      bestD = r;
-    for (var i = 0; i < seamPins.length; i++) {
-      var pin = seamPins[i];
-      var d = Math.hypot(pin.x - p.x, pin.y - p.y);
-      if (d < bestD) {
-        bestD = d;
-        best = pin;
-      }
-    }
-    return best;
-  }
-  function nearestDistrictBorder(p, maxD) {
-    var list = districtPaths();
-    var best = null,
-      bestD = maxD == null ? 12 / (pan.s || 1) : maxD;
-    var xy = [p.x, p.y];
-    for (var i = 0; i < list.length; i++) {
-      var ring = pathRing(list[i]);
-      if (!ring || ring.length < 3) continue;
-      var c = closestOnRingIdx(xy, ring);
-      if (c && c.d < bestD) {
-        bestD = c.d;
-        best = {
-          path: list[i],
-          name: list[i].getAttribute("data-name"),
-          ring: ring,
-          x: c.x,
-          y: c.y,
-          d: c.d,
-        };
-      }
-    }
-    return best;
-  }
-  function neighborAcross(hit, maxD) {
-    maxD = maxD || PEN_FACE + 4;
-    var list = districtPaths();
-    var q = [hit.x, hit.y];
-    var best = null,
-      bestD = maxD;
-    for (var i = 0; i < list.length; i++) {
-      if (list[i] === hit.path) continue;
-      var ring = pathRing(list[i]);
-      if (!ring || ring.length < 3) continue;
-      var d = distToRing(q, ring);
-      if (d < bestD) {
-        bestD = d;
-        best = {
-          path: list[i],
-          name: list[i].getAttribute("data-name"),
-          ring: ring,
-          d: d,
-        };
-      }
-    }
-    return best;
-  }
-  function pickSeamAt(p) {
-    var hit = nearestDistrictBorder(p, 14 / (pan.s || 1));
-    if (!hit) return null;
-    var nb = neighborAcross(hit, PEN_FACE + 4);
-    if (!nb) return null;
-    return {
-      pathA: hit.path,
-      nameA: hit.name,
-      ringA: hit.ring,
-      pathB: nb.path,
-      nameB: nb.name,
-      ringB: nb.ring,
-      x: hit.x,
-      y: hit.y,
-    };
-  }
-  function addRedPin(hit) {
-    var r = pinHitR();
-    for (var i = 0; i < seamPins.length; i++) {
-      if (Math.hypot(seamPins[i].x - hit.x, seamPins[i].y - hit.y) < r)
-        return seamPins[i];
-    }
-    var body = hit.name;
-    var sx = hit.x,
-      sy = hit.y;
-    var seen = {};
-    var bestD = 12;
-    for (var i = 0; i < seamPins.length; i++) {
-      var red = seamPins[i];
-      if (red.kind !== "red" || !red.name || seen[red.name]) continue;
-      seen[red.name] = 1;
-      var pr = pathByName(red.name);
-      var ring = pathRing(pr);
-      if (!ring) continue;
-      var c = closestOnRingIdx([hit.x, hit.y], ring);
-      if (c && c.d < bestD) {
-        bestD = c.d;
-        body = red.name;
-        sx = c.x;
-        sy = c.y;
-      }
-    }
-    var pin = {
-      id: ++pinSeq,
-      kind: "red",
-      x: sx,
-      y: sy,
-      name: body,
-    };
-    seamPins.push(pin);
-    return pin;
-  }
-  function removeSeamPin(pin) {
-    seamPins = seamPins.filter(function (x) {
-      return x.id !== pin.id;
-    });
-    if (ribbonDrag && ribbonDrag.yellow && ribbonDrag.yellow.id === pin.id)
-      cancelRibbon();
-  }
-  function yellowPin() {
-    for (var i = 0; i < seamPins.length; i++)
-      if (seamPins[i].kind === "yellow") return seamPins[i];
-    return null;
-  }
-  function setYellow(x, y, nameA, nameB) {
-    var ypin = yellowPin();
-    if (!ypin) {
-      ypin = { id: ++pinSeq, kind: "yellow", x: x, y: y };
-      seamPins.push(ypin);
-    }
-    ypin.x = x;
-    ypin.y = y;
-    ypin.nameA = nameA;
-    ypin.nameB = nameB;
-    return ypin;
-  }
-  function arcKey(p, ring) {
-    var c = closestOnRingIdx(p, ring);
-    if (!c) return 0;
-    return c.idx + c.t;
-  }
-  function polylineLen(pts) {
-    var L = 0;
-    for (var i = 1; i < pts.length; i++)
-      L += Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
-    return L;
-  }
-  function distToOpen(p, pts) {
-    var best = 1e9;
-    for (var i = 0; i + 1 < pts.length; i++) {
-      var d = dist2seg(p, pts[i], pts[i + 1]);
-      if (d < best) best = d;
-    }
-    return best;
-  }
-  function redsNearPair(ringA, ringB, reds) {
-    var out = [];
-    for (var i = 0; i < reds.length; i++) {
-      var p = [reds[i].x, reds[i].y];
-      if (distToRing(p, ringA) <= 12 || (ringB && distToRing(p, ringB) <= 12))
-        out.push(reds[i]);
+
+  // ---- Catmull-Rom evaluation over a control polyline ----
+  function splineLens(c) {
+    var out = [0];
+    for (var i = 0; i + 1 < c.length; i++) {
+      var dx = c[i + 1][0] - c[i][0];
+      var dy = c[i + 1][1] - c[i][1];
+      out.push(out[i] + Math.sqrt(dx * dx + dy * dy));
     }
     return out;
   }
-  function walkShort(ring, s, e) {
-    var r = stripClosed(ring);
-    var cS = closestOnRingIdx(s, r);
-    var cE = closestOnRingIdx(e, r);
-    if (!cS || !cE) return [s, e];
-    if (cS.idx === cE.idx) return [s, e];
-    var fwd = [s].concat(walkVerts(r, cS.idx, cE.idx), [e]);
-    var bwd = [s].concat(walkBack(r, cS.idx, cE.idx), [e]);
-    return polylineLen(fwd) <= polylineLen(bwd) ? fwd : bwd;
-  }
-  function consecutiveRedPair(ring, at, reds) {
-    var r = stripClosed(ring);
-    if (r.length < 3 || !reds || reds.length < 2) return null;
-    var keyed = reds.map(function (pin) {
-      return { pin: pin, k: arcKey([pin.x, pin.y], r) };
-    });
-    keyed.sort(function (a, b) {
-      return a.k - b.k;
-    });
-    var yk = arcKey(at, r);
-    var near = 16;
-    var hit = null;
-    var hitD = near;
-    for (var i = 0; i < keyed.length; i++) {
-      var A = keyed[i];
-      var B = keyed[(i + 1) % keyed.length];
-      if (A.pin.name && B.pin.name && A.pin.name !== B.pin.name) continue;
-      var inside;
-      if (A.k <= B.k) inside = yk >= A.k && yk <= B.k;
-      else inside = yk >= A.k || yk <= B.k;
-      if (!inside) continue;
-      var s = [A.pin.x, A.pin.y];
-      var e = [B.pin.x, B.pin.y];
-      var walk = walkShort(r, s, e);
-      var d = distToOpen(at, walk);
-      if (d < hitD) {
-        hitD = d;
-        hit = { s: s, e: e, walk: walk, name: A.pin.name || B.pin.name };
+  function splineAt(c, lens, t) {
+    if (!c || c.length < 2) return null;
+    var total = lens[lens.length - 1] || 1e-6;
+    var target = Math.max(0, Math.min(1, t)) * total;
+    for (var i = 0; i + 1 < c.length; i++) {
+      if (lens[i + 1] >= target || i + 2 === c.length) {
+        var seg = lens[i + 1] - lens[i] || 1e-6;
+        var u = (target - lens[i]) / seg;
+        var p0 = c[Math.max(0, i - 1)];
+        var p1 = c[i];
+        var p2 = c[i + 1];
+        var p3 = c[Math.min(c.length - 1, i + 2)];
+        return catmullSpline(p0, p1, p2, p3, u);
       }
     }
-    return hit;
+    return c[c.length - 1];
   }
-  function closestOnOpen(p, pts) {
-    var best = pts && pts[0] ? pts[0] : p,
-      bestD = 1e9;
-    if (!pts || pts.length < 2) return { q: best, d: bestD };
+  function splineSample(c, step) {
+    var lens = splineLens(c);
+    var total = lens[lens.length - 1] || 0;
+    var n = Math.max(2, Math.round(total / step) + 1);
+    var out = [];
+    for (var i = 0; i < n; i++)
+      out.push(splineAt(c, lens, n === 1 ? 0 : i / (n - 1)));
+    return out;
+  }
+  function splineNormals(pts) {
+    var out = [];
+    var n = pts.length;
+    for (var i = 0; i < n; i++) {
+      var a = pts[Math.max(0, i - 1)];
+      var b = pts[Math.min(n - 1, i + 1)];
+      var dx = b[0] - a[0];
+      var dy = b[1] - a[1];
+      var L = Math.sqrt(dx * dx + dy * dy) || 1e-6;
+      out.push([-dy / L, dx / L]);
+    }
+    return out;
+  }
+  function offsetSpline(pts, dist, sign) {
+    var nrms = splineNormals(pts);
+    var out = [];
+    for (var i = 0; i < pts.length; i++)
+      out.push([pts[i][0] + nrms[i][0] * dist * sign, pts[i][1] + nrms[i][1] * dist * sign]);
+    return out;
+  }
+  function catmullThrough(pts, n) {
+    if (pts.length < 2) return pts;
+    var c = [pts[0]].concat(pts, [pts[pts.length - 1]]);
+    var out = [];
+    for (var i = 1; i + 2 < c.length; i++)
+      for (var j = 0; j < n; j++)
+        out.push(catmullSpline(c[i - 1], c[i], c[i + 1], c[i + 2], j / n));
+    out.push(pts[pts.length - 1]);
+    return out;
+  }
+  function chainLen(pts) {
+    var s = 0;
+    for (var i = 0; i + 1 < pts.length; i++)
+      s += Math.hypot(pts[i + 1][0] - pts[i][0], pts[i + 1][1] - pts[i][1]);
+    return s;
+  }
+  // ---- Bezier conversion (Catmull-Rom -> native SVG 'C') ----
+  function cubicBezierPoint(p0, c1, c2, p1, t) {
+    var u = 1 - t;
+    var a = u * u * u,
+      b = 3 * u * u * t,
+      c = 3 * u * t * t,
+      d = t * t * t;
+    return [
+      a * p0[0] + b * c1[0] + c * c2[0] + d * p1[0],
+      a * p0[1] + b * c1[1] + c * c2[1] + d * p1[1],
+    ];
+  }
+  function catmullToBezier(controls) {
+    var n = controls.length;
+    if (n < 2) return [];
+    var segs = [];
+    for (var i = 0; i + 1 < n; i++) {
+      var p0 = controls[Math.max(0, i - 1)];
+      var p1 = controls[i];
+      var p2 = controls[i + 1];
+      var p3 = controls[Math.min(n - 1, i + 2)];
+      var c1 = [p1[0] + (p2[0] - p0[0]) / 6, p1[1] + (p2[1] - p0[1]) / 6];
+      var c2 = [p2[0] - (p3[0] - p1[0]) / 6, p2[1] - (p3[1] - p1[1]) / 6];
+      segs.push([p1, c1, c2, p2]);
+    }
+    return segs;
+  }
+  function segNormal(tx, ty) {
+    var L = Math.sqrt(tx * tx + ty * ty);
+    if (L < 0.01) return [0, 0];
+    return [-ty / L, tx / L];
+  }
+  function offsetBezierSegs(segs, dist, sign, edge) {
+    var out = [];
+    for (var i = 0; i < segs.length; i++) {
+      var s = segs[i];
+      var n0 = segNormal(s[1][0] - s[0][0], s[1][1] - s[0][1]);
+      var n1 = segNormal(s[3][0] - s[2][0], s[3][1] - s[2][1]);
+      if (n0[0] === 0 && n0[1] === 0)
+        console.warn("[RENDER] Degenerate normal vector at segment " + i + " on Edge " + (edge ? edge.districtA + "-" + edge.districtB : "?"));
+      if (n1[0] === 0 && n1[1] === 0)
+        console.warn("[RENDER] Degenerate normal vector at segment " + i + " on Edge " + (edge ? edge.districtA + "-" + edge.districtB : "?"));
+      var o = dist * sign;
+      out.push([
+        [s[0][0] + n0[0] * o, s[0][1] + n0[1] * o],
+        [s[1][0] + n0[0] * o, s[1][1] + n0[1] * o],
+        [s[2][0] + n1[0] * o, s[2][1] + n1[1] * o],
+        [s[3][0] + n1[0] * o, s[3][1] + n1[1] * o],
+      ]);
+    }
+    return out;
+  }
+  function sampleBezierSegs(segs, per) {
+    var pts = [];
+    for (var i = 0; i < segs.length; i++) {
+      var s = segs[i];
+      for (var k = 0; k < per; k++)
+        pts.push(cubicBezierPoint(s[0], s[1], s[2], s[3], k / per));
+      pts.push(s[3]);
+    }
+    return pts;
+  }
+  function bezierSegsToD(segs) {
+    var d = [];
+    for (var i = 0; i < segs.length; i++) {
+      var s = segs[i];
+      if (i === 0) d.push("M" + fmtPt(s[0]));
+      d.push("C" + fmtPt(s[1]) + " " + fmtPt(s[2]) + " " + fmtPt(s[3]));
+    }
+    return d.join(" ");
+  }
+  function writeRingBezier(path, ring, range, segs) {
+    var i0 = range[0];
+    var i1 = range[1];
+    var d = [];
+    d.push("M" + fmtPt(ring[0]));
+    for (var i = 1; i < i0; i++) d.push("L" + fmtPt(ring[i]));
+    if (segs.length) d.push("L" + fmtPt(segs[0][0]));
+    for (var k = 0; k < segs.length; k++) {
+      var s = segs[k];
+      d.push("C" + fmtPt(s[1]) + " " + fmtPt(s[2]) + " " + fmtPt(s[3]));
+    }
+    for (var j = i1 + 1; j < ring.length; j++) d.push("L" + fmtPt(ring[j]));
+    d.push("Z");
+    path.setAttribute("d", d.join(" "));
+  }
+  // ---- Ramer-Douglas-Peucker (Task A: bay filtering before spline fit) ----
+  function rdpSimplify(points, epsilon) {
+    if (!points || points.length <= 2) return points ? points.slice() : [];
+    var n = points.length;
+    var keep = new Array(n);
+    keep[0] = true;
+    keep[n - 1] = true;
+    var stack = [[0, n - 1]];
+    while (stack.length) {
+      var r = stack.pop();
+      var s = r[0],
+        e = r[1];
+      var maxD = 0,
+        idx = -1;
+      for (var i = s + 1; i < e; i++) {
+        var d = dist2seg(points[i], points[s], points[e]);
+        if (d > maxD) {
+          maxD = d;
+          idx = i;
+        }
+      }
+      if (maxD > epsilon && idx >= 0) {
+        keep[idx] = true;
+        stack.push([s, idx]);
+        stack.push([idx, e]);
+      }
+    }
+    var out = [];
+    for (var i = 0; i < n; i++) if (keep[i]) out.push(points[i]);
+    return out;
+  }
+  function projectOnPoly(p, pts) {
+    var pp = Array.isArray(p) ? p : [p.x, p.y];
+    var lens = splineLens(pts);
+    var total = lens[lens.length - 1] || 1e-6;
+    var best = null;
+    var bestD = 1e9;
     for (var i = 0; i + 1 < pts.length; i++) {
-      var c = closestOnSeg(p, pts[i], pts[i + 1]);
+      var c = closestOnSeg(pp, pts[i], pts[i + 1]);
       if (c.d < bestD) {
         bestD = c.d;
-        best = [c.x, c.y];
+        best = { d: c.d, t: (lens[i] + c.t * (lens[i + 1] - lens[i])) / total, q: [c.x, c.y] };
       }
     }
-    return { q: best, d: bestD };
+    return best;
   }
-  function arcNearPoint(ring, s, e, p) {
-    var r = stripClosed(ring);
-    var cS = closestOnRingIdx(s, r);
-    var cE = closestOnRingIdx(e, r);
-    if (!cS || !cE) return [s, e];
-    var fwd = [s].concat(walkVerts(r, cS.idx, cE.idx), [e]);
-    var bwd = [s].concat(walkBack(r, cS.idx, cE.idx), [e]);
-    return distToOpen(p, fwd) <= distToOpen(p, bwd) ? fwd : bwd;
+  function currentRing(path) {
+    var rings = parseD(path.getAttribute("d"));
+    if (!rings.length) return null;
+    return stripClosed(rings[largestRingIx(rings)]);
   }
-  function findEditZone(at) {
-    var reds = seamPins.filter(function (p) {
-      return p.kind === "red";
+  function writeRing(path, ring) {
+    var rings = parseD(path.getAttribute("d"));
+    if (!rings.length) return;
+    rings[largestRingIx(rings)] = ring;
+    path.setAttribute("d", ringsToDFine(rings));
+  }
+  function topoSplice(ring, range, chain) {
+    var i0 = range[0];
+    var i1 = range[1];
+    if (i0 > i1)
+      return ring
+        .slice(0, i1 + 1)
+        .concat(chain.slice().reverse())
+        .concat(ring.slice(i0));
+    return ring.slice(0, i0).concat(chain).concat(ring.slice(i1 + 1));
+  }
+
+  // ---- Phase 2: build topology from SVG ----
+  function buildSharedEdges(A, B) {
+    var ringA = A.ring;
+    var ringB = B.ring;
+    if (ringA.length < 4 || ringB.length < 4) return [];
+    // detect on the denser side (more detail = more reliable run boundaries)
+    var useA = ringA.length >= ringB.length;
+    var base = useA ? ringA : ringB;
+    var other = useA ? ringB : ringA;
+    var baseName = useA ? A.name : B.name;
+    var otherName = useA ? B.name : A.name;
+    var basePath = useA ? A.path : B.path;
+    var otherPath = useA ? B.path : A.path;
+    var baseCmds = useA ? A.cmds : B.cmds;
+
+    var n = base.length;
+    var face = new Array(n);
+    for (var i = 0; i < n; i++)
+      face[i] = distToRing(base[i], other) <= SEAM_DETECT_TOL;
+
+    var edges = [];
+    var i = 0;
+    while (i < n) {
+      if (!face[i]) {
+        i++;
+        continue;
+      }
+      var j = i;
+      while (j < n && face[j]) j++;
+      j--;
+      var runLen = j - i + 1;
+      if (runLen >= MIN_RUN) {
+        var e = buildEdgeFromRun(base, other, baseName, otherName, basePath, otherPath, baseCmds, i, j);
+        if (e) edges.push(e);
+      }
+      i = j + 1;
+    }
+    return edges;
+  }
+  function buildEdgeFromRun(base, other, baseName, otherName, basePath, otherPath, baseCmds, i0, i1) {
+    var a0 = base[i0];
+    var a1 = base[i1];
+    var b0 = closestOnRing(a0, other);
+    var b1 = closestOnRing(a1, other);
+    var iB0 = nearestOnRing(other, b0);
+    var iB1 = nearestOnRing(other, b1);
+    var reverseB = iB0 > iB1;
+
+    var bez = extractRunBezier(baseCmds, i0, i1);
+    var mids;
+    var normalSign;
+    var fast = false;
+    if (bez) {
+      fast = true;
+      var bankPts = sampleBezierSegs(bez, 4);
+      var cent = penCentroid(other);
+      var nrms = splineNormals(bankPts);
+      mids = [];
+      for (var k = 0; k < bankPts.length; k++) {
+        var n = nrms[k];
+        var towardCent = (cent[0] - bankPts[k][0]) * n[0] + (cent[1] - bankPts[k][1]) * n[1];
+        var dir = towardCent >= 0 ? 1 : -1;
+        mids.push([bankPts[k][0] + n[0] * SPLINE_OFFSET * dir, bankPts[k][1] + n[1] * SPLINE_OFFSET * dir]);
+      }
+      normalSign = 1;
+      topoLog("LOAD", "Edge (" + baseName + " x " + otherName + "): Detected 'C' commands -> Fast-track direct spline load (" + mids.length + " control points).");
+    } else {
+      var subChain = base.slice(i0, i1 + 1);
+      mids = [];
+      for (var k = 0; k < subChain.length; k++) {
+        var q = closestOnRing(subChain[k], other);
+        mids.push([(subChain[k][0] + q[0]) / 2, (subChain[k][1] + q[1]) / 2]);
+      }
+      var mid0 = mids[0];
+      var toward = closestOnRing(mid0, base);
+      var vx = toward[0] - mid0[0];
+      var vy = toward[1] - mid0[1];
+      var tdx = mids[1][0] - mids[0][0];
+      var tdy = mids[1][1] - mids[0][1];
+      var nx = -tdy;
+      var ny = tdx;
+      var L = Math.sqrt(nx * nx + ny * ny) || 1;
+      normalSign = (nx * vx + ny * vy) / L >= 0 ? 1 : -1;
+      topoLog("LOAD", "Edge (" + baseName + " x " + otherName + "): Detected 'L' commands -> Slow OSM parse (midpoints + D-P filter).");
+    }
+
+    // Task A: Ramer-Douglas-Peucker bay filter before spline fit
+    var rawN = mids.length;
+    var filtered = rdpSimplify(mids, 8.0);
+    if (filtered.length < 2) filtered = mids;
+    var filtN = filtered.length;
+    topoLog(
+      "SPLINE",
+      "Bay filter (D-P) applied. Epsilon: 8.0. Raw pts: " + rawN + " -> Filtered pts: " + filtN + ". Length delta: -" + (chainLen(mids) - chainLen(filtered)).toFixed(1) + " px."
+    );
+    if (rawN > 0 && filtN / rawN < 0.3)
+      console.warn("[SPLINE] Aggressive reduction (>70%) on Edge " + baseName + "-" + otherName);
+
+    var rangeA = [i0, i1];
+    var rangeB = [Math.min(iB0, iB1), Math.max(iB0, iB1)];
+    topoLog(
+      "SPLINE",
+      "A=" + baseName + " B=" + otherName +
+        " | run[" + i0 + ".." + i1 + "] len=" + (i1 - i0 + 1) +
+        " | rawPts A=" + base.length + " B=" + other.length +
+        " | gap@nodeStart=" + distToRing(a0, other).toFixed(2) + "px gap@nodeEnd=" + distToRing(a1, other).toFixed(2) + "px" +
+        " | controls=" + filtered.length
+    );
+    return {
+      districtA: baseName,
+      districtB: otherName,
+      pathA: basePath,
+      pathB: otherPath,
+      ringA: base.slice(),
+      ringB: other.slice(),
+      rangeA: rangeA,
+      rangeB: rangeB,
+      reverseB: reverseB,
+      base: filtered,
+      lens: splineLens(filtered),
+      normalSign: normalSign,
+      pins: [],
+      nodeStart: { x: filtered[0][0], y: filtered[0][1] },
+      nodeEnd: { x: filtered[filtered.length - 1][0], y: filtered[filtered.length - 1][1] },
+    };
+  }
+  function extractRunBezier(cmds, i0, i1) {
+    if (!cmds) return null;
+    var segs = [];
+    for (var i = 0; i < cmds.length; i++) {
+      var c = cmds[i];
+      if (c.b < i0 || c.a > i1) continue;
+      if (c.op === "C" && c.bez) segs = segs.concat(c.bez);
+      // M / bridge-L / outer-L tails inside the facing run are fine:
+      // the spline bank is exactly the overlapping C segments.
+    }
+    return segs.length ? segs : null;
+  }
+  function clusterNodes(pts) {
+    var nodes = [];
+    for (var i = 0; i < pts.length; i++) {
+      var found = -1;
+      for (var j = 0; j < nodes.length; j++) {
+        if (Math.hypot(nodes[j].x - pts[i].x, nodes[j].y - pts[i].y) < 4) {
+          found = j;
+          break;
+        }
+      }
+      if (found < 0)
+        nodes.push({ id: nodes.length + 1, x: pts[i].x, y: pts[i].y });
+    }
+    return nodes;
+  }
+  function buildOuterEdges(list, sharedEdges) {
+    var out = [];
+    for (var d = 0; d < list.length; d++) {
+      var ring = list[d].ring;
+      var n = ring.length;
+      var covered = new Array(n);
+      for (var s = 0; s < sharedEdges.length; s++) {
+        var e = sharedEdges[s];
+        if (e.districtA === list[d].name) markRange(covered, n, e.rangeA);
+        if (e.districtB === list[d].name) markRange(covered, n, e.rangeB);
+      }
+      var start = -1;
+      for (var k = 0; k < n; k++)
+        if (!covered[k]) {
+          start = k;
+          break;
+        }
+      if (start < 0) continue;
+      var i = start;
+      var guard = 0;
+      do {
+        while (covered[i]) i = (i + 1) % n;
+        var run = [];
+        while (!covered[i] && run.length <= n) {
+          run.push(ring[i]);
+          i = (i + 1) % n;
+          if (run.length > n) break;
+        }
+        if (run.length >= 2)
+          out.push({ id: ++topoSeq, district: list[d].name, points: run });
+        guard++;
+        if (guard > n + 2) break;
+      } while (i !== start);
+    }
+    return out;
+  }
+  function markRange(covered, n, range) {
+    var i = range[0];
+    var end = range[1];
+    var guard = 0;
+    while (guard <= n) {
+      covered[i] = 1;
+      if (i === end) break;
+      i = (i + 1) % n;
+      guard++;
+    }
+  }
+  function buildTopologyFromSVG() {
+    TOPO = { nodes: [], sharedEdges: [], outerEdges: [], built: false };
+    topoSeq = 0;
+    var districts = districtPaths();
+    var list = [];
+    for (var i = 0; i < districts.length; i++) {
+      var nm = districts[i].getAttribute("data-name");
+      var dp = parseDPath(districts[i].getAttribute("d"));
+      if (!dp.length) continue;
+      var oi = largestRingIx(dp.map(function (r) { return r.pts; }));
+      var ring = stripClosed(dp[oi].pts);
+      if (ring && ring.length >= 4)
+        list.push({ name: nm, path: districts[i], ring: ring, cmds: dp[oi].cmds });
+    }
+    var endpointPts = [];
+    for (var a = 0; a < list.length; a++)
+      for (var b = a + 1; b < list.length; b++) {
+        var es = buildSharedEdges(list[a], list[b]);
+        for (var e = 0; e < es.length; e++) {
+          es[e].id = ++topoSeq;
+          TOPO.sharedEdges.push(es[e]);
+          endpointPts.push(es[e].nodeStart);
+          endpointPts.push(es[e].nodeEnd);
+        }
+      }
+    TOPO.nodes = clusterNodes(endpointPts);
+    TOPO.outerEdges = buildOuterEdges(list, TOPO.sharedEdges);
+    TOPO.built = true;
+    window.__topo = TOPO;
+    topoLog(
+      "TOPOLOGY",
+      "nodes=" + TOPO.nodes.length +
+        " sharedEdges=" + TOPO.sharedEdges.length +
+        " outerEdges=" + TOPO.outerEdges.length
+    );
+  }
+
+  // ---- Phase 3: interaction via spline parameter t ----
+  function topoFindEdgeAt(p) {
+    var best = null;
+    var bestD = PICK_TOL / (pan.s || 1);
+    for (var i = 0; i < TOPO.sharedEdges.length; i++) {
+      var e = TOPO.sharedEdges[i];
+      var pr = projectOnPoly(p, e.base);
+      if (pr && pr.d < bestD) {
+        bestD = pr.d;
+        best = { edge: e, t: pr.t };
+      }
+    }
+    return best;
+  }
+  function topoHitPin(p) {
+    var r = PICK_TOL / (pan.s || 1);
+    var best = null;
+    var bestD = r;
+    for (var e = 0; e < TOPO.sharedEdges.length; e++) {
+      var pins = TOPO.sharedEdges[e].pins;
+      for (var i = 0; i < pins.length; i++) {
+        var d = Math.hypot(pins[i].x - p.x, pins[i].y - p.y);
+        if (d < bestD) {
+          bestD = d;
+          best = pins[i];
+        }
+      }
+    }
+    return best;
+  }
+  function topoAddRedPin(edge, t) {
+    var q = splineAt(edge.base, edge.lens, t);
+    for (var i = 0; i < edge.pins.length; i++) {
+      var p = edge.pins[i];
+      if (p.isLocked && Math.abs(p.t - t) < 0.02) return;
+    }
+    var pin = { id: ++pinSeq, isLocked: true, t: t, x: q[0], y: q[1] };
+    edge.pins.push(pin);
+    topoLog("INTERACT", "red t=" + t.toFixed(3) + " at (" + q[0].toFixed(1) + "," + q[1].toFixed(1) + ")");
+  }
+  function topoRemovePin(pin) {
+    for (var e = 0; e < TOPO.sharedEdges.length; e++) {
+      var pins = TOPO.sharedEdges[e].pins;
+      for (var i = 0; i < pins.length; i++)
+        if (pins[i].id === pin.id) {
+          pins.splice(i, 1);
+          return;
+        }
+    }
+  }
+  function topoZoneAt(p) {
+    var hit = topoFindEdgeAt(p);
+    if (!hit) return null;
+    var edge = hit.edge;
+    var reds = edge.pins
+      .filter(function (x) {
+        return x.isLocked;
+      })
+      .sort(function (a, b) {
+        return a.t - b.t;
+      });
+    if (reds.length < 2) return null;
+    for (var i = 0; i + 1 < reds.length; i++)
+      if (hit.t >= reds[i].t && hit.t <= reds[i + 1].t)
+        return { edge: edge, redL: reds[i], redR: reds[i + 1], x: p.x, y: p.y };
+    return null;
+  }
+
+  // ---- Phase 4: render districts from spline offset ----
+  function topoEffectiveControls(edge) {
+    var c = edge.base;
+    if (!edge.pins.length) return c;
+    var yellow = null;
+    var reds = [];
+    for (var i = 0; i < edge.pins.length; i++) {
+      if (edge.pins[i].isLocked) reds.push(edge.pins[i]);
+      else yellow = edge.pins[i];
+    }
+    if (!yellow || reds.length < 2) return c;
+    reds.sort(function (a, b) {
+      return a.t - b.t;
     });
-    var by = {};
-    for (var i = 0; i < reds.length; i++) {
-      var n = reds[i].name || "";
-      if (!by[n]) by[n] = [];
-      by[n].push(reds[i]);
+    var redL = null;
+    var redR = null;
+    for (var i = 0; i + 1 < reds.length; i++)
+      if (reds[i].t <= yellow.t && yellow.t <= reds[i + 1].t) {
+        redL = reds[i];
+        redR = reds[i + 1];
+        break;
+      }
+    if (!redL || !redR) return c;
+    var iL = Math.round(redL.t * (edge.base.length - 1));
+    var iR = Math.round(redR.t * (edge.base.length - 1));
+    if (iL > iR) {
+      var tt = iL;
+      iL = iR;
+      iR = tt;
     }
-    var best = null,
-      bestD = 16;
-    var names = Object.keys(by);
-    var nReds = 0;
-    for (var k = 0; k < names.length; k++) {
-      nReds = Math.max(nReds, by[names[k]].length);
-      if (by[names[k]].length < 2) continue;
-      var path = pathByName(names[k]);
-      var ring = pathRing(path);
-      if (!ring) continue;
-      var pair = consecutiveRedPair(ring, at, by[names[k]]);
-      if (!pair) continue;
-      var d = distToOpen(at, pair.walk);
-      if (d < bestD) {
-        bestD = d;
-        best = {
-          s: pair.s,
-          e: pair.e,
-          name: names[k],
-          path: path,
-          ring: ring,
-          walk: pair.walk,
-        };
+    var pL = splineAt(edge.base, edge.lens, redL.t);
+    var pR = splineAt(edge.base, edge.lens, redR.t);
+    var seg = catmullThrough([pL, [yellow.x, yellow.y], pR], 12);
+    return edge.base.slice(0, iL).concat(seg, edge.base.slice(iR + 1));
+  }
+  function renderDistricts(edge) {
+    var controls = topoEffectiveControls(edge);
+    var beziers = catmullToBezier(controls);
+    edge.bankA = offsetBezierSegs(beziers, SPLINE_OFFSET, edge.normalSign, edge);
+    edge.bankB = offsetBezierSegs(beziers, SPLINE_OFFSET, -edge.normalSign, edge);
+    topoLog(
+      "RENDER",
+      "Bezier conversion: " + controls.length + " pts -> " + beziers.length + " 'C' segments. (Old 2px method would generate ~" + Math.max(2, Math.round(chainLen(controls) / SPLINE_SAMPLE)) + " 'L' points)."
+    );
+    renderDistrictSide(edge.districtA);
+    renderDistrictSide(edge.districtB);
+  }
+  function renderDistrictSide(name) {
+    return; // SPLINE DISABLED: subsystem distorts district geometry on real OSM data
+    var path = pathByName(name);
+    if (!path) return;
+    var parts = [];
+    var ring = null;
+    for (var i = 0; i < TOPO.sharedEdges.length; i++) {
+      var e = TOPO.sharedEdges[i];
+      var segs = null;
+      var range = null;
+      var r = null;
+      if (e.districtA === name && e.bankA) { segs = e.bankA; range = e.rangeA; r = e.ringA; }
+      if (e.districtB === name && e.bankB) {
+        segs = e.reverseB ? e.bankB.slice().reverse() : e.bankB;
+        range = e.rangeB;
+        r = e.ringB;
+      }
+      if (!segs || !range || !r) continue;
+      parts.push({ range: range, segs: segs });
+      if (!ring) ring = r;
+    }
+    if (!ring || !parts.length) return;
+    var sorted = parts.slice().sort(function (a, b) {
+      return a.range[0] - b.range[0];
+    });
+    // self-intersection check on the full assembled ring
+    var pts = [];
+    var cur = 0;
+    for (var i = 0; i < sorted.length; i++) {
+      pts = pts.concat(ring.slice(cur, sorted[i].range[0]));
+      pts = pts.concat(sampleBezierSegs(sorted[i].segs, 3));
+      cur = sorted[i].range[1] + 1;
+    }
+    pts = pts.concat(ring.slice(cur));
+    if (hasSelfIntersection(pts))
+      console.error("[RENDER] Self-intersection detected on offset for District " + name + "!");
+    // serialize: outer edges as L, shared edges as native C
+    var d = [];
+    d.push("M" + fmtPt(ring[0]));
+    cur = 1;
+    for (var i = 0; i < sorted.length; i++) {
+      var p = sorted[i];
+      for (var k = cur; k < p.range[0]; k++) d.push("L" + fmtPt(ring[k]));
+      if (p.segs.length) d.push("L" + fmtPt(p.segs[0][0]));
+      for (var s = 0; s < p.segs.length; s++) {
+        var sg = p.segs[s];
+        d.push("C" + fmtPt(sg[1]) + " " + fmtPt(sg[2]) + " " + fmtPt(sg[3]));
+      }
+      cur = p.range[1] + 1;
+    }
+    for (var k = cur; k < ring.length; k++) d.push("L" + fmtPt(ring[k]));
+    d.push("Z");
+    path.setAttribute("d", d.join(" "));
+  }
+  function topoSpliceRing(ring, range, chain) {
+    var i0 = range[0];
+    var i1 = range[1];
+    if (i0 > i1)
+      return ring.slice(0, i1 + 1).concat(chain.slice().reverse()).concat(ring.slice(i0));
+    return ring.slice(0, i0).concat(chain).concat(ring.slice(i1 + 1));
+  }
+
+  // ---- TOPO state snapshots (undo stores spline control points + pins, not raw d) ----
+  function topoSnapshot() {
+    var snap = [];
+    for (var i = 0; i < TOPO.sharedEdges.length; i++) {
+      var e = TOPO.sharedEdges[i];
+      snap.push({
+        id: e.id,
+        base: e.base.map(function (p) {
+          return [p[0], p[1]];
+        }),
+        pins: e.pins.map(function (p) {
+          return { id: p.id, isLocked: p.isLocked, t: p.t, x: p.x, y: p.y };
+        }),
+      });
+    }
+    return snap;
+  }
+  function topoRestore(snap) {
+    if (!snap) return;
+    for (var i = 0; i < snap.length; i++) {
+      var s = snap[i];
+      for (var j = 0; j < TOPO.sharedEdges.length; j++) {
+        if (TOPO.sharedEdges[j].id === s.id) {
+          var e = TOPO.sharedEdges[j];
+          e.base = s.base.map(function (p) {
+            return [p[0], p[1]];
+          });
+          e.lens = splineLens(e.base);
+          e.pins = s.pins.map(function (p) {
+            return { id: p.id, isLocked: p.isLocked, t: p.t, x: p.x, y: p.y };
+          });
+          e.bankA = null;
+          e.bankB = null;
+          break;
+        }
       }
     }
-    return { zone: best, nReds: nReds };
   }
+  function topoSplinePointCount() {
+    var c = 0;
+    for (var i = 0; i < TOPO.sharedEdges.length; i++) c += TOPO.sharedEdges[i].base.length;
+    return c;
+  }
+  function topoRerenderAll() {
+    for (var i = 0; i < TOPO.sharedEdges.length; i++) renderDistricts(TOPO.sharedEdges[i]);
+  }
+  function pushTopoUndo(label) {
+    actionSeq++;
+    dropTrailingStrokes();
+    pushUndo({ type: "topo", id: actionSeq, label: label || "шов", topo: topoSnapshot() });
+  }
+  function materializeSplines() {
+    if (hint) hint.textContent = "сплайнизация отключена: ломает геометрию районов на реальных данных";
+    return;
+    if (!TOPO || !TOPO.sharedEdges.length) {
+      if (hint) hint.textContent = "сплайнов нет — карта ещё не загружена";
+      return;
+    }
+    pushTopoUndo("сделать сплайн");
+    var n = 0;
+    for (var i = 0; i < TOPO.sharedEdges.length; i++) {
+      renderDistricts(TOPO.sharedEdges[i]);
+      n++;
+    }
+    buildLabels();
+    renderPins();
+    topoLog("SPLINE", "Materialized " + n + " shared edges: raw L boundaries -> native Bezier (C) splines.");
+    if (hint) hint.textContent = "сплайны построены: " + n + " швов переведены в C-Безье";
+    scheduleSave();
+  }
+
+  // ---- drag lifecycle ----
+  function beginTopoDrag(e, zone) {
+    var edge = zone.edge;
+    pushTopoUndo("шов · " + short(edge.districtA));
+    edge.pins = edge.pins.filter(function (p) {
+      return p.isLocked;
+    });
+    var ypin = {
+      id: ++pinSeq,
+      isLocked: false,
+      t: (zone.redL.t + zone.redR.t) / 2,
+      x: zone.x,
+      y: zone.y,
+    };
+    edge.pins.push(ypin);
+    topoDrag = { edge: edge, yellow: ypin };
+    ignoreClicksUntil = Date.now() + 800;
+    topoLog("INTERACT", "yellow start t=" + ypin.t.toFixed(3) + " at (" + ypin.x.toFixed(1) + "," + ypin.y.toFixed(1) + ")");
+    renderDistricts(edge);
+    renderPins();
+  }
+  function beginTopoDragFromYellow(e, pin) {
+    var edge = null;
+    for (var i = 0; i < TOPO.sharedEdges.length; i++) {
+      var pins = TOPO.sharedEdges[i].pins;
+      for (var j = 0; j < pins.length; j++)
+        if (pins[j].id === pin.id) {
+          edge = TOPO.sharedEdges[i];
+          break;
+        }
+      if (edge) break;
+    }
+    if (!edge) return;
+    var reds = edge.pins
+      .filter(function (x) {
+        return x.isLocked;
+      })
+      .sort(function (a, b) {
+        return a.t - b.t;
+      });
+    var redL = null;
+    var redR = null;
+    for (var k = 0; k + 1 < reds.length; k++)
+      if (reds[k].t <= pin.t && pin.t <= reds[k + 1].t) {
+        redL = reds[k];
+        redR = reds[k + 1];
+        break;
+      }
+    if (!redL || !redR) return;
+    pushTopoUndo("шов · " + short(edge.districtA));
+    ignoreClicksUntil = Date.now() + 800;
+    topoDrag = { edge: edge, yellow: pin };
+  }
+  function moveTopoDrag(e) {
+    if (!topoDrag) return;
+    var p = pos(e);
+    topoDrag.yellow.x = p.x;
+    topoDrag.yellow.y = p.y;
+    if (window.__debugSpline)
+      topoLog("INTERACT", "yellow drag (" + p.x.toFixed(1) + "," + p.y.toFixed(1) + ")");
+    renderDistricts(topoDrag.edge);
+    renderPins();
+  }
+  function endTopoDrag(e) {
+    if (!topoDrag) return;
+    var edge = topoDrag.edge;
+    var g = edge.districtA;
+    var s = edge.districtB;
+    topoLog("INTERACT", "yellow commit edge " + g + " / " + s);
+    // commit: bake the yellow bulge into the base spline, keep red anchors
+    edge.base = topoEffectiveControls(edge);
+    edge.lens = splineLens(edge.base);
+    edge.pins = edge.pins.filter(function (p) {
+      return p.isLocked;
+    });
+    for (var i = 0; i < edge.pins.length; i++) {
+      var q = splineAt(edge.base, edge.lens, edge.pins[i].t);
+      if (q) {
+        edge.pins[i].x = q[0];
+        edge.pins[i].y = q[1];
+      }
+    }
+    topoDrag = null;
+    renderDistricts(edge);
+    buildLabels();
+    renderPins();
+    if (hint) hint.textContent = "шов сдвинут · " + short(g) + " / " + short(s);
+    scheduleSave();
+  }
+  function cancelRibbon() {
+    if (!topoDrag) return;
+    topoDrag = null;
+    dropTrailingStrokes();
+    var last = undoStack.pop();
+    if (last && last.type === "topo") topoRestore(last.topo);
+    redoStack = [];
+    topoRerenderAll();
+    buildLabels();
+    renderPins();
+  }
+
   function ensurePinsSvg() {
     var s = document.getElementById("pins");
     if (s) return s;
@@ -3502,266 +3788,30 @@
     s.setAttribute("height", String(H));
   }
   function renderPins() {
+    if (!TOPO || !TOPO.sharedEdges) return;
     var s = ensurePinsSvg();
     if (!s) return;
     setPinsSize();
     var inv = pan.s ? 1 / pan.s : 1;
     var html = "";
-    if (ribbonDrag && ribbonDrag.s && ribbonDrag.e) {
-      html +=
-        '<line class="mouth" x1="' +
-        ribbonDrag.s[0] +
-        '" y1="' +
-        ribbonDrag.s[1] +
-        '" x2="' +
-        ribbonDrag.e[0] +
-        '" y2="' +
-        ribbonDrag.e[1] +
-        '" vector-effect="non-scaling-stroke"/>';
-    }
-    for (var i = 0; i < seamPins.length; i++) {
-      var pin = seamPins[i];
-      html +=
-        '<g transform="translate(' +
-        pin.x +
-        "," +
-        pin.y +
-        ") scale(" +
-        inv.toFixed(5) +
-        ')"><circle class="pin ' +
-        pin.kind +
-        '" r="5"/></g>';
+    for (var e = 0; e < TOPO.sharedEdges.length; e++) {
+      var pins = TOPO.sharedEdges[e].pins;
+      for (var i = 0; i < pins.length; i++) {
+        var pin = pins[i];
+        html +=
+          '<g transform="translate(' +
+          pin.x +
+          "," +
+          pin.y +
+          ") scale(" +
+          inv.toFixed(5) +
+          ')"><circle class="pin ' +
+          (pin.isLocked ? "red" : "yellow") +
+          '" r="5"/></g>';
+      }
     }
     s.innerHTML = html;
   }
-  function cancelRibbon() {
-    if (!ribbonDrag) return;
-    if (ribbonDrag.pathG)
-      ribbonDrag.pathG.setAttribute("d", ribbonDrag.dG);
-    if (ribbonDrag.pathS)
-      ribbonDrag.pathS.setAttribute("d", ribbonDrag.dS);
-    if (ribbonDrag.snapped) discardLastUndo();
-    ribbonDrag = null;
-    renderPins();
-  }
-  function waterRings() {
-    var g = svg.querySelector("#water");
-    if (!g) return [];
-    return Array.prototype.slice
-      .call(g.querySelectorAll("path"))
-      .map(function (p) {
-        var rr = parseD(p.getAttribute("d"));
-        if (!rr.length) return null;
-        return stripClosed(rr[largestRingIx(rr)]);
-      })
-      .filter(Boolean);
-  }
-  function nearbyBodyNames(p, maxD) {
-    var names = [];
-    districtPaths().forEach(function (pp) {
-      var ring = pathRing(pp);
-      if (ring && distToRing(p, ring) <= maxD)
-        names.push(pp.getAttribute("data-name"));
-    });
-    waterRings().forEach(function (ring) {
-      if (distToRing(p, ring) <= maxD) names.push("#water");
-    });
-    return names;
-  }
-  function walkHasJunction(walk, nameA, nameB) {
-    if (!walk || walk.length < 3) return false;
-    for (var i = 1; i + 1 < walk.length; i++) {
-      var near = nearbyBodyNames(walk[i], PEN_FACE);
-      var extra = 0;
-      var hasA = false,
-        hasB = false;
-      for (var k = 0; k < near.length; k++) {
-        if (near[k] === nameA) hasA = true;
-        else if (near[k] === nameB) hasB = true;
-        else extra++;
-      }
-      if (hasA && hasB && extra) return true;
-    }
-    return false;
-  }
-  function hitsWater(pts) {
-    var rings = waterRings();
-    if (!rings.length || !pts) return false;
-    for (var i = 1; i + 1 < pts.length; i++) {
-      for (var r = 0; r < rings.length; r++) {
-        if (pointInRing(pts[i], rings[r])) return true;
-      }
-    }
-    return false;
-  }
-  function yellowOnGrowBody(cursor) {
-    if (!ribbonDrag) return cursor;
-    var ring = pathRing(ribbonDrag.pathG) || ribbonDrag.ringG;
-    var arc = arcNearPoint(ring, ribbonDrag.s, ribbonDrag.e, cursor);
-    var hit = closestOnOpen(cursor, arc);
-    return hit.q || cursor;
-  }
-  function applyRibbonFrame(yellow) {
-    if (!ribbonDrag || !ribbonDrag.s || !ribbonDrag.e) return false;
-    var out = deformPair(
-      ribbonDrag.ringG,
-      ribbonDrag.ringS,
-      ribbonDrag.s,
-      ribbonDrag.e,
-      yellow,
-      SEAM_GAP,
-      ribbonDrag.walk
-    );
-    if (!out.A || !out.B) return false;
-    if (hitsWater(out.A) || hitsWater(out.B)) return false;
-    var a0 = Math.abs(signedArea(ribbonDrag.ringG));
-    var b0 = Math.abs(signedArea(ribbonDrag.ringS));
-    if (Math.abs(signedArea(out.A)) < a0 * 0.45) return false;
-    if (Math.abs(signedArea(out.B)) < b0 * 0.45) return false;
-    var ringsG = parseD(ribbonDrag.dG);
-    var ringsS = parseD(ribbonDrag.dS);
-    ringsG[largestRingIx(ringsG)] = out.A;
-    ringsS[largestRingIx(ringsS)] = out.B;
-    ribbonDrag.pathG.setAttribute("d", ringsToDFine(ringsG));
-    ribbonDrag.pathS.setAttribute("d", ringsToDFine(ringsS));
-    return true;
-  }
-  function beginRibbonDrag(e, seam, pt, originPt, fixedEnds) {
-    if (!seam) return;
-    var cursor = [pt.x, pt.y];
-    var origin = originPt
-      ? [originPt.x, originPt.y]
-      : [seam.x, seam.y];
-    var found = findEditZone(origin);
-    var zone = found.zone;
-    if (fixedEnds && fixedEnds.s && fixedEnds.e && seam.nameA) {
-      var bodyPath = pathByName(seam.nameA);
-      zone = {
-        s: fixedEnds.s,
-        e: fixedEnds.e,
-        name: seam.nameA,
-        path: bodyPath,
-        ring: pathRing(bodyPath),
-        walk: walkShort(pathRing(bodyPath) || seam.ringA, fixedEnds.s, fixedEnds.e),
-      };
-    }
-    if (!zone) {
-      if (hint)
-        hint.textContent =
-          found.nReds < 2
-            ? "нужны две красные по краям участка"
-            : "жёлтая только между двумя соседними красными";
-      return;
-    }
-    var mid = [
-      (zone.s[0] + zone.e[0]) / 2,
-      (zone.s[1] + zone.e[1]) / 2,
-    ];
-    var nb = neighborAcross(
-      { path: zone.path, x: mid[0], y: mid[1] },
-      PEN_FACE + 4
-    );
-    if (!nb || nb.name === zone.name) {
-      if (hint) hint.textContent = "это не шов — внешний край не тянем";
-      return;
-    }
-    if (walkHasJunction(zone.walk, zone.name, nb.name)) {
-      if (hint)
-        hint.textContent =
-          "тройник внутри участка — красные до узла и после, не через него";
-      return;
-    }
-    var ringG = zone.ring;
-    var ringS = nb.ring;
-    if (!ringG || !ringS) return;
-    ignoreClicksUntil = Date.now() + 800;
-    ribbonDrag = {
-      pathG: zone.path,
-      pathS: nb.path,
-      dG: zone.path.getAttribute("d"),
-      dS: nb.path.getAttribute("d"),
-      ringG: ringG,
-      ringS: ringS,
-      nameG: zone.name,
-      nameS: nb.name,
-      snapped: false,
-      s: zone.s,
-      e: zone.e,
-      walk: zone.walk || walkShort(ringG, zone.s, zone.e),
-    };
-    var onBody = closestOnOpen(origin, zone.walk);
-    var ypin = setYellow(onBody.q[0], onBody.q[1], zone.name, nb.name);
-    ypin.s = zone.s;
-    ypin.e = zone.e;
-    ypin.nameA = zone.name;
-    ypin.nameB = nb.name;
-    ribbonDrag.yellow = ypin;
-    snapshotPaths("шов · " + short(zone.name));
-    ribbonDrag.snapped = true;
-    if (!applyRibbonFrame(cursor)) {
-      discardLastUndo();
-      ribbonDrag = null;
-      if (hint) hint.textContent = "это не шов — внешний край не тянем";
-      renderPins();
-      return;
-    }
-    var vis = yellowOnGrowBody(cursor);
-    setYellow(vis[0], vis[1], zone.name, nb.name);
-    try {
-      viewport.setPointerCapture(e.pointerId);
-    } catch (err) {}
-    if (hint)
-      hint.textContent =
-        "тянем шов → " + short(zone.name) + " растёт, " + short(nb.name) + " худеет";
-    renderPins();
-  }
-  function beginRibbonFromPin(e, pin) {
-    var p = { x: pin.x, y: pin.y };
-    var bodyName = pin.nameA;
-    var pA = pathByName(bodyName);
-    var pB = pathByName(pin.nameB);
-    var seam = null;
-    if (pA && pB)
-      seam = {
-        pathA: pA,
-        nameA: bodyName,
-        ringA: pathRing(pA),
-        pathB: pB,
-        nameB: pin.nameB,
-        ringB: pathRing(pB),
-        x: pin.x,
-        y: pin.y,
-      };
-    if (!seam) seam = pickSeamAt(p);
-    if (!seam) return;
-    var fixed =
-      pin.s && pin.e ? { s: pin.s, e: pin.e } : null;
-    beginRibbonDrag(e, seam, p, p, fixed);
-  }
-  function moveRibbon(e) {
-    if (!ribbonDrag) return;
-    var pt = pos(e);
-    applyRibbonFrame([pt.x, pt.y]);
-    var vis = yellowOnGrowBody([pt.x, pt.y]);
-    setYellow(vis[0], vis[1], ribbonDrag.nameG, ribbonDrag.nameS);
-    renderPins();
-  }
-  function endRibbon(e) {
-    if (!ribbonDrag) return;
-    if (e) moveRibbon(e);
-    var g = ribbonDrag.nameG,
-      s = ribbonDrag.nameS;
-    ribbonDrag = null;
-    ignoreClicksUntil = Date.now() + 400;
-    buildLabels();
-    buildLayers();
-    if (hint)
-      hint.textContent =
-        "шов сдвинут · " + short(g) + " / " + short(s);
-    renderPins();
-    scheduleSave();
-  }
-
   function applyVoid(kind) {
     var ink = ctx.getImageData(0, 0, W, H).data;
     var has = false;
@@ -3964,91 +4014,6 @@
     }
     return { punched: punched, kept: kept };
   }
-  function seamSnap(tid, neu, gap, pull) {
-    gap = gap || SEAM_GAP;
-    pull = pull == null ? SEAM_PULL : pull;
-    var foreign = new Uint8Array(W * H);
-    var hasForeign = false;
-    for (var i = 0; i < labels.length; i++) {
-      if (labels[i] && labels[i] !== tid) {
-        foreign[i] = 1;
-        hasForeign = true;
-      }
-    }
-    if (!hasForeign) return { punched: 0, pulled: 0 };
-    var dt = chebyshevDT(foreign);
-    var dn = chebyshevDT(neu);
-    var punched = 0,
-      pulled = 0;
-    for (var j = 0; j < labels.length; j++) {
-      if (!neu[j] || labels[j] !== tid) continue;
-      if (dt[j] > 0 && dt[j] <= gap) {
-        labels[j] = 0;
-        neu[j] = 0;
-        punched++;
-      }
-    }
-    for (var k = 0; k < labels.length; k++) {
-      if (labels[k] !== 0) continue;
-      if (dt[k] > gap && dt[k] <= gap + pull && dn[k] <= pull) {
-        labels[k] = tid;
-        neu[k] = 1;
-        pulled++;
-      }
-    }
-    return { punched: punched, pulled: pulled };
-  }
-  function nearestTwoIds(x, y, maxr) {
-    var first = 0;
-    var d1 = 0;
-    var second = 0;
-    var d2 = 0;
-    for (var r = 1; r <= maxr; r++) {
-      for (var dy = -r; dy <= r; dy++) {
-        for (var dx = -r; dx <= r; dx++) {
-          if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
-          var xx = x + dx;
-          var yy = y + dy;
-          if (xx < 0 || yy < 0 || xx >= W || yy >= H) continue;
-          var id = labels[yy * W + xx];
-          if (!id) continue;
-          if (!first) {
-            first = id;
-            d1 = r;
-          } else if (id !== first && !second) {
-            second = id;
-            d2 = r;
-          }
-          if (first && second)
-            return { gap: d1 + d2 - 1, a: first, b: second };
-        }
-      }
-    }
-    return null;
-  }
-  function measureGapPx() {
-    var samples = [];
-    var step = 5;
-    for (var y = 2; y < H - 2; y += step) {
-      for (var x = 2; x < W - 2; x += step) {
-        if (labels[y * W + x]) continue;
-        var hit = nearestTwoIds(x, y, 8);
-        if (!hit || hit.gap < 2 || hit.gap > 6) continue;
-        samples.push(hit.gap);
-      }
-    }
-    if (samples.length < 12) {
-      gapPx = GAP_DEFAULT;
-      syncThickUi();
-      return gapPx;
-    }
-    samples.sort(function (a, b) {
-      return a - b;
-    });
-    gapPx = Math.max(2, Math.min(6, samples[(samples.length / 2) | 0]));
-    syncThickUi();
-    return gapPx;
-  }
   var DIRS8 = [
     [1, 0],
     [1, 1],
@@ -4172,28 +4137,105 @@
     }
     return { ok: gap.length > 12, gap: gap };
   }
-  function parseD(d) {
+  function parseDPath(d) {
+    // Full path parser. Returns per-ring: { pts: flattened points, cmds: [{op,a,b,bez?}] }
+    // where cmds[i].a/b are indices into pts; 'C' cmds carry the cubic segments in `bez`.
     var rings = [];
-    var cur = [];
-    var parts = String(d || "").match(/[MLZmlz][^MLZmlz]*/g) || [];
+    var pts = [];
+    var cmds = [];
+    var cur = null;
+    var lastCtrl = null;
+    function beginRing() {
+      if (pts.length) rings.push({ pts: pts, cmds: cmds });
+      pts = [];
+      cmds = [];
+      cur = null;
+      lastCtrl = null;
+    }
+    function addCmd(op, a, b, bez) {
+      cmds.push({ op: op, a: a, b: b, bez: bez || null });
+    }
+    var parts = String(d || "").match(/[MmLlCcSsQqTtZzHhVv][^MmLlCcSsQqTtZzHhVv]*/g) || [];
     for (var i = 0; i < parts.length; i++) {
       var op = parts[i][0];
       var nums = parts[i].match(/-?\d+(?:\.\d+)?/g) || [];
-      var pts = [];
-      for (var j = 0; j + 1 < nums.length; j += 2)
-        pts.push([parseFloat(nums[j]), parseFloat(nums[j + 1])]);
-      if (op === "M" || op === "m") {
-        if (cur.length) rings.push(cur);
-        cur = pts.slice();
-      } else if (op === "L" || op === "l") {
-        cur = cur.concat(pts);
+      var f = [];
+      for (var j = 0; j < nums.length; j++) f.push(parseFloat(nums[j]));
+      var isRel = op >= "a" && op <= "z";
+      var up = op.toUpperCase();
+      function abs(j) {
+        return isRel && cur ? [cur[0] + f[j], cur[1] + f[j + 1]] : [f[j], f[j + 1]];
+      }
+      if (up === "M") {
+        beginRing();
+        var a = pts.length;
+        for (var j = 0; j + 1 < f.length; j += 2) {
+          var p = abs(j);
+          pts.push(p);
+          cur = p;
+        }
+        addCmd("M", a, pts.length - 1);
+        if (f.length > 2) addCmd("L", a + 1, pts.length - 1);
+        lastCtrl = null;
+      } else if (up === "L") {
+        var a = pts.length;
+        for (var j = 0; j + 1 < f.length; j += 2) {
+          var p = abs(j);
+          pts.push(p);
+          cur = p;
+        }
+        addCmd("L", a, pts.length - 1);
+        lastCtrl = null;
+      } else if (up === "C") {
+        var a = pts.length;
+        var bez = [];
+        for (var j = 0; j + 5 < f.length; j += 6) {
+          var c1 = abs(j);
+          var c2 = abs(j + 2);
+          var p1 = abs(j + 4);
+          var p0 = cur || [0, 0];
+          bez.push([p0, c1, c2, p1]);
+          for (var k = 1; k <= 6; k++) pts.push(cubicBezierPoint(p0, c1, c2, p1, k / 6));
+          cur = p1;
+          lastCtrl = c2;
+        }
+        addCmd("C", a, pts.length - 1, bez);
+      } else if (up === "S") {
+        var a = pts.length;
+        var bez = [];
+        for (var j = 0; j + 3 < f.length; j += 4) {
+          var c2 = abs(j);
+          var p1 = abs(j + 2);
+          var p0 = cur || [0, 0];
+          var c1 = lastCtrl ? [2 * p0[0] - lastCtrl[0], 2 * p0[1] - lastCtrl[1]] : p0.slice();
+          bez.push([p0, c1, c2, p1]);
+          for (var k = 1; k <= 6; k++) pts.push(cubicBezierPoint(p0, c1, c2, p1, k / 6));
+          cur = p1;
+          lastCtrl = c2;
+        }
+        addCmd("C", a, pts.length - 1, bez);
+      } else if (up === "Z") {
+        // close: nothing to append
       } else {
-        if (cur.length) rings.push(cur);
-        cur = [];
+        // Q/T/H/V and anything else: flatten as plain points (best effort lineto)
+        var a = pts.length;
+        for (var j = 0; j + 1 < f.length; j += 2) {
+          var p = abs(j);
+          pts.push(p);
+          cur = p;
+        }
+        addCmd("L", a, pts.length - 1);
+        lastCtrl = null;
       }
     }
-    if (cur.length) rings.push(cur);
+    if (pts.length) rings.push({ pts: pts, cmds: cmds });
     return rings;
+  }
+  function parseD(d) {
+    var rings = parseDPath(d);
+    var out = [];
+    for (var i = 0; i < rings.length; i++) out.push(rings[i].pts);
+    return out;
   }
   function densifyRing(ring, step) {
     if (!ring || ring.length < 2) return ring || [];
@@ -4305,10 +4347,8 @@
       p.setAttribute("data-smooth", String(Math.round(splineTension * 100)));
       changed++;
     });
-    var seamsChanged = 0;
-    if (!restore)
-      seamsChanged = seamAlignPathsAll(names && names.length ? names : null, SEAM_GAP);
     if (typeof buildLabels === "function") buildLabels();
+    buildTopologyFromSVG();
     if (hint)
       hint.textContent = restore
         ? "контуры возвращены: " + changed
@@ -4317,8 +4357,7 @@
           ", шаг " +
           splineStep +
           " px): " +
-          changed +
-          (seamsChanged ? " · швы согласованы: " + seamsChanged : "");
+          changed;
   }
   function smoothAll() {
     var all = paths().map(function (p) {
@@ -4361,116 +4400,6 @@
     }
     out.push(chain[chain.length - 1]);
     return out;
-  }
-  function midpointChain(fa, fb) {
-    var n = Math.max(2, Math.max(fa.length, fb.length));
-    var a = resampleChain(fa, n),
-      b = resampleChain(fb, n);
-    return a.map(function (pt, i) {
-      return [(pt[0] + b[i][0]) / 2, (pt[1] + b[i][1]) / 2];
-    });
-  }
-  function longestChain(runs) {
-    var best = [];
-    for (var i = 0; i < runs.length; i++)
-      if (runs[i].length > best.length) best = runs[i];
-    return best;
-  }
-  function offsetMid(mid, fa, fb, gap) {
-    var n = mid.length;
-    var a = resampleChain(fa, n),
-      b = resampleChain(fb, n);
-    var half = gap / 2;
-    var A = [],
-      B = [];
-    for (var i = 0; i < n; i++) {
-      var mx = mid[i][0],
-        my = mid[i][1];
-      var dax = a[i][0] - mx,
-        day = a[i][1] - my;
-      var dal = Math.hypot(dax, day);
-      var ux = dal > 1e-6 ? dax / dal : 0,
-        uy = dal > 1e-6 ? day / dal : 0;
-      A.push([mx + ux * half, my + uy * half]);
-      B.push([mx - ux * half, my - uy * half]);
-    }
-    return { A: A, B: B };
-  }
-  function seamAlignPairRings(ringsA, ringsB, maxD, gap) {
-    var A = ringsA[0],
-      B = ringsB[0];
-    if (!A || !B || A.length < 4 || B.length < 4) return null;
-    var fas = facingRuns(A, B, maxD);
-    var fbs = facingRuns(B, A, maxD);
-    if (!fas.length || !fbs.length) return null;
-    var fa = longestChain(fas);
-    var fb = null,
-      bestD = 1e18;
-    for (var j = 0; j < fbs.length; j++) {
-      var r = fbs[j];
-      if (r.length < 2) continue;
-      var d = Math.min(
-        dist2seg(fa[0], r[0], r[0]),
-        dist2seg(fa[0], r[r.length - 1], r[r.length - 1]),
-        dist2seg(fa[fa.length - 1], r[0], r[0]),
-        dist2seg(fa[fa.length - 1], r[r.length - 1], r[r.length - 1])
-      );
-      if (d < bestD) {
-        bestD = d;
-        fb = r;
-      }
-    }
-    if (!fb || fb.length < 2) return null;
-    var seams = pairEndSeams(fa, fb);
-    if (seams.length !== 2) return null;
-    var fa0 = seams[0][0],
-      fa1 = seams[1][0],
-      fb0 = seams[0][1],
-      fb1 = seams[1][1];
-    var faO = fa[0][0] === fa0[0] && fa[0][1] === fa0[1] ? fa : fa.slice().reverse();
-    var fbO = fb[0][0] === fb0[0] && fb[0][1] === fb0[1] ? fb : fb.slice().reverse();
-    var mid = midpointChain(faO, fbO);
-    if (mid.length < 2) return null;
-    var chainA = mid,
-      chainB = mid;
-    if (gap > 0) {
-      var off = offsetMid(mid, faO, fbO, gap);
-      chainA = off.A;
-      chainB = off.B;
-    }
-    var tailA = walkRing(A, fa1, fa0, true).slice(1);
-    var newA = chainA.concat(tailA);
-    var tailB = walkRing(B, fb1, fb0, true).slice(1);
-    var newB = chainB.slice().reverse().concat(tailB);
-    return {
-      A: [newA].concat(ringsA.slice(1)),
-      B: [newB].concat(ringsB.slice(1)),
-    };
-  }
-  function seamAlignPathsAll(onlyNames, gap) {
-    var all = paths();
-    var changed = 0;
-    for (var i = 0; i < all.length; i++) {
-      for (var j = i + 1; j < all.length; j++) {
-        var pa = all[i],
-          pb = all[j];
-        if (!pathVisible(pa) || !pathVisible(pb)) continue;
-        if (onlyNames && onlyNames.length) {
-          var na = pa.getAttribute("data-name"),
-            nb = pb.getAttribute("data-name");
-          if (onlyNames.indexOf(na) < 0 && onlyNames.indexOf(nb) < 0) continue;
-        }
-        var ra = parseD(pa.getAttribute("d")),
-          rb = parseD(pb.getAttribute("d"));
-        if (!ra[0] || !rb[0]) continue;
-        var r = seamAlignPairRings(ra, rb, 9, gap);
-        if (!r) continue;
-        pa.setAttribute("d", ringsToDFine(r.A));
-        pb.setAttribute("d", ringsToDFine(r.B));
-        changed++;
-      }
-    }
-    return changed;
   }
   function distToRing(p, ring) {
     var best = 1e9;
@@ -5122,6 +5051,11 @@ var magnetBtn = document.getElementById("btn-magnet");
     smoothBtn.onclick = function () {
       smoothSelected();
     };
+  var splineBtn = document.getElementById("btn-spline");
+  if (splineBtn)
+    splineBtn.onclick = function () {
+      materializeSplines();
+    };
   var smoothSlider = document.getElementById("smooth");
   var smoothVal = document.getElementById("smooth-val");
   if (smoothSlider) {
@@ -5434,8 +5368,8 @@ var magnetBtn = document.getElementById("btn-magnet");
     clearRuler();
     seamPins = [];
     pinSeq = 0;
-    pendingRibbon = null;
-    ribbonDrag = null;
+    pendingTopo = null;
+    topoDrag = null;
     renderPins();
     labels = new Uint16Array(W * H);
     undoStack = [];
@@ -5445,7 +5379,7 @@ var magnetBtn = document.getElementById("btn-magnet");
     target = null;
     fragSeq = 0;
     buildLabels();
-    measureGapPx();
+    buildTopologyFromSVG();
     paths().forEach(function (p, i) {
       p.setAttribute("data-lid", String(i + 1));
       bindPathClick(p);
@@ -5810,6 +5744,28 @@ var magnetBtn = document.getElementById("btn-magnet");
     if (suppressSave || !saveDirty || !currentUser || !currentSlug || !hasApi())
       return;
     saveDirty = false;
+    if (TOPO && TOPO.sharedEdges) {
+      var savedIds = [];
+      var skippedIds = [];
+      for (var i = 0; i < TOPO.sharedEdges.length; i++) {
+        var e = TOPO.sharedEdges[i];
+        if (e.base && e.base.length >= 2) savedIds.push(e.id);
+        else skippedIds.push(e.id);
+      }
+      topoLog(
+        "SAVE",
+        "Serializing TOPO. SharedEdges saved as Native Bezier (C): [" + savedIds.join(", ") +
+          "]. SharedEdges skipped/legacy: [" + skippedIds.join(", ") + "]. OuterEdges: " + TOPO.outerEdges.length + "."
+      );
+    }
+    paths().forEach(function (p) {
+      var nm = p.getAttribute("data-name");
+      var old = lastDLengths[nm] || 0;
+      var neu = (p.getAttribute("d") || "").length;
+      if (old !== neu)
+        topoLog("SAVE", "District " + nm + " path length: " + old + " chars -> " + neu + " chars.");
+      lastDLengths[nm] = neu;
+    });
     var svg = currentSvgText();
     if (!svg) return;
     fetch("/api/maps", {
@@ -6411,7 +6367,7 @@ var magnetBtn = document.getElementById("btn-magnet");
   }
 
   buildLabels();
-  measureGapPx();
+  buildTopologyFromSVG();
   paths().forEach(function (p, i) {
     p.setAttribute("data-lid", String(i + 1));
     var nm = p.getAttribute("data-name") || "";

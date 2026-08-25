@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Карандаш и выравнивание — отчёт мастерской</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,500;0,600;0,700;1,500&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&display=swap" rel="stylesheet">
+<style>
+:root {
+  --paper: #f2e8d5;
+  --paper-2: #e7dcc4;
+  --ink: #2b2317;
+  --ink-soft: #5c5346;
+  --rule: #c9b99a;
+  --land: #ead9bc;
+  --land-2: #d4c09a;
+  --neigh: #c9b48a;
+  --water: #3d6b72;
+  --water-deep: #1a3a4a;
+  --foam: #dfe9e6;
+  --ok: #3d5c3a;
+  --stop: #8a4030;
+  --gap: #f2e8d5;
+  --focus: #2b2317;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--paper); color: var(--ink); }
+body {
+  font-family: "IBM Plex Sans", sans-serif;
+  font-size: 16px;
+  line-height: 1.55;
+  text-wrap: pretty;
+}
+a { color: inherit; }
+a:focus-visible, button:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.wrap {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  min-height: 100vh;
+}
+nav {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow: auto;
+  border-right: 1px solid var(--rule);
+  padding: 28px 18px 48px;
+  background: var(--paper-2);
+}
+nav .mark {
+  font-family: "EB Garamond", serif;
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  margin: 0 0 4px;
+}
+nav .sub {
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+  margin-bottom: 28px;
+}
+nav ol {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+nav li { margin: 0 0 10px; }
+nav a {
+  text-decoration: none;
+  font-size: 13.5px;
+  color: var(--ink-soft);
+  display: flex;
+  gap: 8px;
+}
+nav a:hover { color: var(--ink); }
+nav a span {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 11px;
+  color: var(--rule);
+  min-width: 1.6em;
+}
+main { padding: 36px 48px 80px; max-width: 980px; }
+.kicker {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+  margin: 0 0 8px;
+}
+h1, h2, h3 { font-family: "EB Garamond", serif; font-weight: 600; letter-spacing: -0.01em; }
+h1 { font-size: clamp(36px, 5vw, 52px); line-height: 1.12; margin: 0 0 16px; }
+h2 { font-size: 30px; margin: 56px 0 14px; padding-top: 12px; border-top: 1px solid var(--rule); }
+h3 { font-size: 22px; margin: 28px 0 8px; }
+p { margin: 0 0 14px; max-width: 68ch; }
+.lede { font-family: "EB Garamond", serif; font-size: 22px; line-height: 1.35; max-width: 42rem; margin-bottom: 28px; }
+.verdict {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1px;
+  background: var(--rule);
+  border: 1px solid var(--rule);
+  margin: 28px 0 36px;
+}
+.verdict article {
+  background: var(--paper);
+  padding: 18px 20px 16px;
+}
+.verdict h3 { margin: 0 0 8px; font-size: 20px; }
+.verdict p { margin: 0; font-size: 14.5px; }
+.tag {
+  display: inline-block;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  border: 1px solid var(--ink);
+  padding: 2px 7px;
+  margin-bottom: 10px;
+}
+.tag.ok { border-color: var(--ok); color: var(--ok); }
+.tag.stop { border-color: var(--stop); color: var(--stop); }
+.tag.water { border-color: var(--water-deep); color: var(--water-deep); }
+.legend {
+  display: grid;
+  grid-template-columns: 140px 1fr;
+  gap: 0;
+  border-top: 1px solid var(--rule);
+  margin: 20px 0 28px;
+  max-width: 52rem;
+}
+.legend div { padding: 9px 12px 9px 0; border-bottom: 1px solid var(--rule); font-size: 14.5px; }
+.legend dt { font-weight: 600; }
+.plate {
+  background: var(--paper-2);
+  border: 1px solid var(--rule);
+  margin: 20px 0 28px;
+}
+.plate-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--rule);
+  align-items: center;
+}
+.plate-bar strong {
+  font-family: "EB Garamond", serif;
+  font-size: 18px;
+  font-weight: 600;
+  margin-right: auto;
+}
+.plate button {
+  font-family: "IBM Plex Sans", sans-serif;
+  font-size: 13px;
+  background: transparent;
+  border: 1px solid var(--ink);
+  color: var(--ink);
+  padding: 6px 11px;
+  cursor: pointer;
+}
+.plate button[aria-pressed="true"] {
+  background: var(--ink);
+  color: var(--paper);
+}
+.plate figcaption {
+  padding: 10px 14px 14px;
+  font-size: 14px;
+  color: var(--ink-soft);
+  max-width: none;
+}
+.plate svg { display: block; width: 100%; height: auto; background: var(--paper); }
+ol.steps, ul.plain { padding-left: 1.2em; max-width: 68ch; }
+ol.steps li, ul.plain li { margin-bottom: 8px; }
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13.5px;
+  margin: 12px 0 28px;
+}
+th, td {
+  text-align: left;
+  vertical-align: top;
+  padding: 8px 10px 8px 0;
+  border-bottom: 1px solid var(--rule);
+}
+th { font-weight: 600; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-soft); }
+code, .mono { font-family: "IBM Plex Mono", monospace; font-size: 0.88em; }
+.stages { display: grid; gap: 0; border: 1px solid var(--rule); margin: 16px 0 32px; }
+.stages section { padding: 16px 18px; border-bottom: 1px solid var(--rule); }
+.stages section:last-child { border-bottom: 0; }
+.stages .n {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+.note {
+  font-size: 14.5px;
+  border-top: 1px dashed var(--rule);
+  padding-top: 14px;
+  max-width: 68ch;
+}
+footer {
+  margin-top: 48px;
+  padding-top: 14px;
+  border-top: 1px solid var(--ink);
+  font-size: 12.5px;
+  color: var(--ink-soft);
+}
+@media (max-width: 860px) {
+  .wrap { grid-template-columns: 1fr; }
+  nav { position: relative; height: auto; border-right: 0; border-bottom: 1px solid var(--rule); }
+  main { padding: 24px 18px 64px; }
+  .verdict { grid-template-columns: 1fr; }
+  .legend { grid-template-columns: 1fr; }
+}
+@media (prefers-reduced-motion: reduce) {
+  * { scroll-behavior: auto !important; }
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav aria-label="Оглавление">
+  <p class="mark">Мастерская</p>
+  <p class="sub">Самара · карта районов</p>
+  <ol>
+    <li><a href="#v"><span>00</span>Вердикт</a></li>
+    <li><a href="#w"><span>01</span>Файл «вода 2»</a></li>
+    <li><a href="#d"><span>02</span>Словарь</a></li>
+    <li><a href="#p"><span>03</span>Карандаш</a></li>
+    <li><a href="#m"><span>04</span>Живая схема</a></li>
+    <li><a href="#e"><span>05</span>Три края</a></li>
+    <li><a href="#a"><span>06</span>Выравнивание</a></li>
+    <li><a href="#b"><span>07</span>Баги и края</a></li>
+    <li><a href="#s"><span>08</span>Очередь работ</a></li>
+  </ol>
+</nav>
+<main>
+<p class="kicker">Отчёт · 22 августа 2026 · не код</p>
+<h1>Карандаш растит одно тело.<br>Выравнивание гладит все сразу.<br>Вода в это не входит.</h1>
+<p class="lede">Полный ответ по логике карандаша и выравнивания границ — после чтения <span class="mono">шейдеры воды 2.txt</span>. Новый файл не меняет 2D-контракт. Он его закрепляет: русло в 3D кормится отдельным полигоном воды, а не заливкой района.</p>
+
+<section id="v">
+<h2>Вердикт</h2>
+<div class="verdict">
+  <article>
+    <span class="tag ok">Карандаш</span>
+    <h3>Один объём за жест</h3>
+    <p>Выход на подложку и возврат. Хвосты отрезаются. Горб 1px законен. К соседу ближе 5px нельзя по точкам. Линия на экране не обрывается. Ноль после ограничения — тишина, не ошибка.</p>
+  </article>
+  <article>
+    <span class="tag ok">Выравнивание</span>
+    <h3>Желаемая форма, потом щель</h3>
+    <p>Сглаживание, срез пиков, заливка мелких бухт и выгиб дуги — черновик. Последний шаг у всех тел сразу: не ближе 5px к соседу, без полуостровов в поле. Превью тонкой экранной линией, затем Отмена / Подтвердить.</p>
+  </article>
+  <article>
+    <span class="tag water">Вода</span>
+    <h3>Не сосед</h3>
+    <p>Слой «Вода» не участвует в 5px. «Вода 2» — генератор маски русла + шейдер плоскости. Если карандаш зальёт Волгу как бухту района, 3D-русло потеряет берег.</p>
+  </article>
+  <article>
+    <span class="tag stop">Не сейчас</span>
+    <h3>Рябь и рытьё DEM</h3>
+    <p>Пайплайн из файла 2 — будущий продукт сайта, не цех SVG. До отдельного ТЗ русла воду в карандаш не вшивать. Заявленные 55 FPS на Intel HD и «Awwwards» в файле не измерялись.</p>
+  </article>
+</div>
+</section>
+
+<section id="w">
+<h2>Что в файле «шейдеры воды 2»</h2>
+<p>Это не правки редактора карты. Это набросок 3D-реки: Python печёт текстуры, GLSL рисует воду, React Three Fiber вешает плоскость.</p>
+<ol class="steps">
+  <li><strong>Бэкенд.</strong> GeoJSON реки → маска 1024×1024 → вычитание глубины из DEM («рытьё русла») → карта течения, пены, шума.</li>
+  <li><strong>Вершины.</strong> Три волны Герстнера + высота из heightmap + LOD, если камера далеко.</li>
+  <li><strong>Пиксели.</strong> Цвет мели/глубины, fresnel, блик, пена у берега, рябь от курсора, туман.</li>
+  <li><strong>Сцена.</strong> Прямоугольная <span class="mono">PlaneGeometry</span> 60×100. Форма Волги не в меше, а в альфе маски.</li>
+</ol>
+<p>Следствие для 2D: источником воды остаётся <em>отдельный полигон</em> (слой Вода / GeoJSON), не граница района. Карандаш и выравнивание работают только с телами районов. Волга (~15px) по-прежнему не шов: порог «на шву» у объединения — 7px, его нельзя поднимать к 15, иначе суша схлопнет реку.</p>
+<p class="note">Честно про качество черновика: цикл точка-в-полигон на каждый пиксель 1024² будет минутами; вектор течения зашит константой 0.3 / −0.8, это не русло Волги; FPS и VRAM в таблице — маркетинг. Для решения по карандашу этого достаточно: вода = маска, районы = другие полигоны.</p>
+</section>
+
+<section id="d">
+<h2>Словарь</h2>
+<div class="legend">
+  <div class="dt"><strong>Тело</strong></div><div>Заливка одного района.</div>
+  <div class="dt"><strong>Граница</strong></div><div>Замкнутая ломаная этого тела.</div>
+  <div class="dt"><strong>Подложка</strong></div><div>Бежевый фон между телами. Не чужой район и не вода.</div>
+  <div class="dt"><strong>Шов</strong></div><div>Узкая щель, где два района смотрят друг на друга.</div>
+  <div class="dt"><strong>Бухта</strong></div><div>Провал границы внутрь своего тела. Рот можно закрыть хордой.</div>
+  <div class="dt"><strong>Хвост</strong></div><div>Кусок штриха до первого или после последнего пересечения со своей границей.</div>
+  <div class="dt"><strong>5px</strong></div><div>Пол: ближе к чужому району нельзя. Не цель «встать ровно на пять».</div>
+</div>
+</section>
+
+<section id="p">
+<h2>Карандаш — контракт</h2>
+<ol class="steps">
+  <li>Только наращивает выбранное тело. Резать — нож.</li>
+  <li>Ровно один выход на подложку и один возврат. Иначе ничего не делаем.</li>
+  <li>В объём идёт кусок линии между двумя пересечениями. Хвосты внутри тела и хвосты на подложке до/после границы игнорируются одинаково.</li>
+  <li>Высота горба 1px или 10px — не фильтр. Магнит не должен есть мелкий горб на всём штрихе: только посадка концов, либо концы считаются пересечениями.</li>
+  <li>К соседу ближе 5px нельзя <em>по точкам</em>: где места 20px — оставляем нарисованное; где щель 6 — плюс 1px; где уже 5 — в этом месте ноль. Весь горб целиком не сжимаем.</li>
+  <li>Пока ведём линию, на экране она не обрывается о соседа. Обрезка только в заливке.</li>
+  <li>После ограничения добавлять нечего — тишина, граница как была.</li>
+  <li>Касание своей границы посередине = второй заход = весь жест в урну. Касание геометрическое (ломаные пересеклись), не толщина пера.</li>
+</ol>
+</section>
+
+<section id="m">
+<h2>Живая схема</h2>
+<p>Слева сосед, справа своё тело с бухтой, снизу вода. Кнопки меняют, что сделает карандаш. Подложка между соседями — те самые 5px.</p>
+<figure class="plate">
+  <div class="plate-bar">
+    <strong>Пластина 01 · Самара условно</strong>
+    <button type="button" data-mode="bay" aria-pressed="true">Бухта</button>
+    <button type="button" data-mode="seam">Шов</button>
+    <button type="button" data-mode="void">Пустота</button>
+    <button type="button" data-mode="clamp">Клэмп 5px</button>
+  </div>
+  <svg viewBox="0 0 640 340" role="img" aria-labelledby="cap">
+    <title>Схема района, соседа, бухты и воды</title>
+    <rect width="640" height="340" fill="#f2e8d5"/>
+    <path d="M0 268h640v72H0z" fill="#3d6b72"/>
+    <path d="M0 268c80-10 140 8 220 0 70-6 120 12 200 4 90-10 150 6 220-8v20H0z" fill="#4a8a7a" opacity=".55"/>
+    <text x="24" y="318" fill="#dfe9e6" font-family="IBM Plex Mono, monospace" font-size="11" letter-spacing="1.5">ВОДА · НЕ СОСЕД · НЕ 5PX</text>
+    <path id="neigh" d="M36 36h168v210H36z" fill="#c9b48a"/>
+    <path id="self" d="M214 40h250c18 0 28 14 28 32v28c0 38-48 52-48 88 0 22 20 30 48 30h22v52H214V40z" fill="#ead9bc"/>
+    <rect x="204" y="40" width="10" height="210" fill="#f2e8d5"/>
+    <text x="52" y="148" fill="#2b2317" font-family="EB Garamond, serif" font-size="18">сосед</text>
+    <text x="300" y="92" fill="#2b2317" font-family="EB Garamond, serif" font-size="18">своё тело</text>
+    <text x="208" y="32" fill="#5c5346" font-family="IBM Plex Mono, monospace" font-size="10">5px шов</text>
+    <g id="viz-bay">
+      <path d="M444 100c0 30-40 44-40 72 0 18 16 26 40 28v-20c-14 0-22-8-22-18 0-28 40-40 40-62z" fill="#d4c09a"/>
+      <path d="M444 98c-2 28-42 44-42 74" fill="none" stroke="#2b2317" stroke-width="1.6" stroke-dasharray="4 3"/>
+      <text x="462" y="168" fill="#3d5c3a" font-family="IBM Plex Sans, sans-serif" font-size="12">карман заливаем</text>
+    </g>
+    <g id="viz-seam" hidden>
+      <path d="M204 70h8v150h-8z" fill="#d4c09a"/>
+      <path d="M208 70v150" fill="none" stroke="#8a4030" stroke-width="1.4" stroke-dasharray="3 3"/>
+      <text x="44" y="250" fill="#8a4030" font-family="IBM Plex Sans, sans-serif" font-size="12">растём только до 5px · сосед цел</text>
+    </g>
+    <g id="viz-void" hidden>
+      <path d="M490 48c40-28 78-22 110 6" fill="none" stroke="#8a4030" stroke-width="1.8"/>
+      <text x="500" y="36" fill="#8a4030" font-family="IBM Plex Sans, sans-serif" font-size="12">полуостров в поле · не добавляем</text>
+    </g>
+    <g id="viz-clamp" hidden>
+      <path d="M214 96c18 0 34-22 52-22 14 0 18 10 18 22 0 12-4 22-18 22-18 0-34-22-52-22z" fill="#d4c09a" opacity=".35"/>
+      <path d="M214 96c10 0 18-8 28-8 8 0 10 6 10 8s-2 8-10 8c-10 0-18-8-28-8z" fill="#d4c09a"/>
+      <text x="300" y="128" fill="#3d5c3a" font-family="IBM Plex Sans, sans-serif" font-size="12">нарисовали 10 · места 6 · добавили 1</text>
+    </g>
+  </svg>
+  <figcaption id="cap">Бухта: дно крюка смотрит в своё тело, карман сейчас подложка — это недостающий объём, его закрываем.</figcaption>
+</figure>
+</section>
+
+<section id="e">
+<h2>Три края — не одно правило</h2>
+<h3>Шов</h3>
+<p>Своё тело растёт насколько можно, до 5px до чужой границы. Соседа не двигаем и не режем. Нарисованная дуга может зайти на соседа — для заливки она всё равно прижмётся.</p>
+<h3>Бухта на внешнем крае</h3>
+<p>Граница сделала крюк внутрь. Карман подложки во рту крюка — недостающий объём своего же тела, не новая земля. Признак: средняя точка старого берега между выходом и входом лежит по ту же сторону от хорды, что и внутренность района. Заливаем как нарисовали.</p>
+<h3>Пустота</h3>
+<p>Горб от внешнего края наружу, за оболочку района, без соседа — не добавляем. Карандаш не рисует полуострова в поле.</p>
+<h3>Смешанный край</h3>
+<p>Одну «точку отсечения» искать не нужно. У каждой точки новой дуги свой класс: шов / бухта / пустота. На шву — клэмп, в бухте — как нарисовали, в пустоте — выступ ноль. Смена класса вдоль дуги и есть та точка. Жёсткий отсекатель даст ступеньку.</p>
+<p>Жест с запада на восток через полкарты: формально один проход, но не бухта. Если путь по границе между концами слишком длинный — ничего не делаем, иначе штрих съест район.</p>
+</section>
+
+<section id="a">
+<h2>Выравнивание</h2>
+<p>Карандаш только растит. Выравнивание и заливает мелкие бухты, и срезает острые выступы. Срез пика щель только увеличивает. Заливка долины напротив соседа — тот же пол 5px. Полуострова в поле по-прежнему запрещены.</p>
+<p>Цепочка «многоугольник → середина зубцов → долины и пики → скругление → выгиб дуги» описывает <em>желаемую</em> форму. Если выгиб сделать после щели, он снова впивается в соседа. Поэтому один проход: сначала черновик контура, последним — проекция на разрешённую зону у всех тел сразу.</p>
+<p>«Вписать N-угольник и равномерно вытолкнуть грани» на вогнутых районах протыкает соседа. Тот же замысел стабильнее: скользящая середина зубцов (ползунок волны) → упростить до N углов → скругление → лёгкий выгиб как черновик → проекция. На шву берега сажать на ±2.5px от срединной линии старого зазора. Два–три круга по всем районам, иначе один выровнялся, сосед ещё зубцы, щель пилит.</p>
+<p>Превью — тонкая линия в экранных пикселях, как линейка, не обводка SVG (при зуме не расползётся). Отмена выкидывает оверлей. Подтвердить — одна запись в журнал на всю карту: щель парная, поштучный undo вреден. Не писать превью в <span class="mono">d</span> до подтверждения: автосейв иначе портит проект.</p>
+<p>Ползунки первой версии: волна, число углов, скругление, дуга. Щель держать константой 5.</p>
+</section>
+
+<section id="b">
+<h2>Баги и пограничные случаи</h2>
+<table>
+  <thead>
+    <tr><th>#</th><th>Случай</th><th>Должно</th><th>Если забыть</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>1</td><td>Горб 1px при магните 5px на всём штрихе</td><td>Магнит только у концов</td><td>Линия прилипает, объёма нет</td></tr>
+    <tr><td>2</td><td>Старт в теле → подложка → снова тело</td><td>Отрезать хвосты, объём от пересечения до пересечения</td><td>Снап первой точки не туда</td></tr>
+    <tr><td>3</td><td>Два выхода или касание своей границы посередине</td><td>Ничего не делаем</td><td>Две бухты или ложный отказ из‑за толщины пера</td></tr>
+    <tr><td>4</td><td>Линия прошла по соседу</td><td>Рисуем как есть, заливаем до 5px</td><td>Вырежем соседа или схлопнем своё</td></tr>
+    <tr><td>5</td><td>Щель вдоль дуги 20px и 6px</td><td>Локально 10 и 1</td><td>Весь горб сжать или отменить</td></tr>
+    <tr><td>6</td><td>Щель уже 0.4px (Ставропольский / Красноярский)</td><td>Карандаш добавляет 0</td><td>Ждать починку шва от карандаша. Это выравнивание</td></tr>
+    <tr><td>7</td><td>Выход и вход на разных концах района</td><td>Отказ, если не бухта</td><td>Район на полкарты</td></tr>
+    <tr><td>8</td><td>Не та дуга старой границы</td><td>Оставляем большую часть тела</td><td>Тело схлопывается в ушко — уже было</td></tr>
+    <tr><td>9</td><td>Тройник трёх районов</td><td>Пятно подложки в развилке живёт</td><td>Один зальёт стык двоих</td></tr>
+    <tr><td>10</td><td>Волга как «бухта» района</td><td>Вода не долина и не шов</td><td>Суша закроет реку, 3D-маска умрёт</td></tr>
+    <tr><td>11</td><td>Выгиб после щели отдельным шагом</td><td>Щель — последний шаг</td><td>Дуга снова в соседа</td></tr>
+    <tr><td>12</td><td>Выровнять район A, потом B</td><td>Два–три круга по всем</td><td>Щель пилит каждый кадр</td></tr>
+    <tr><td>13</td><td>Кинель-Черкасский из двух кусков</td><td>Правим только задетый кусок</td><td>Склеить эксклав</td></tr>
+    <tr><td>14</td><td>Превью записали в SVG до «подтвердить»</td><td>Только оверлей</td><td>F5 сохраняет черновик</td></tr>
+  </tbody>
+</table>
+</section>
+
+<section id="s">
+<h2>Очередь</h2>
+<div class="stages">
+  <section>
+    <p class="n">Этап A · сейчас</p>
+    <h3>Карандаш</h3>
+    <p>Пересечения, хвосты, один проход, класс кармана (шов / бухта / пустота), поточечный пол 5px, большая часть тела остаётся. Выкинуть притяжение к соседу и сглаживание новой дуги. Стенд: бухта Волжского, горб 1px, маркер вдоль Красноярского при щели ~5 (ожидание: ноль), жест через соседа, два выхода.</p>
+  </section>
+  <section>
+    <p class="n">Этап B · после зелёного A</p>
+    <h3>Выравнивание</h3>
+    <p>Ползунки, превью-линия, проекция всех тел, тройники не заливать, вода не трогать. Одна запись журнала на подтверждение.</p>
+  </section>
+  <section>
+    <p class="n">Этап C · не открывать</p>
+    <h3>Вода как сосед, рябь, DEM</h3>
+    <p>Когда будет ТЗ русла: публиковать слой Вода в GeoJSON для генератора масок. Не смешивать с карандашом «на всякий случай».</p>
+  </section>
+</div>
+<p>Ядро одно. Две кнопки. Вода — третий объект, пока зритель.</p>
+</section>
+
+<footer>
+  Источники: разговор 22.08.2026; docs/PEN-AND-ALIGN-PLAN.md; Desktop/шейдеры воды.txt (параллакс, не вода); Desktop/шейдеры воды 2.txt (маска русла + GLSL). Палитра бумаги #F2E8D5 — подложка карты, не декоративный крем.
+</footer>
+</main>
+</div>
+<script>
+(function () {
+  var caps = {
+    bay: "Бухта: дно крюка смотрит в своё тело, карман сейчас подложка — это недостающий объём, его закрываем.",
+    seam: "Шов: линия на экране не обрывается. В заливку идёт только то, что не ближе 5px к соседу. Сосед цел.",
+    void: "Пустота: горб в поле за оболочку района. Карандаш не создаёт землю, которой не было. Тишина.",
+    clamp: "Клэмп по точкам: нарисовали 10px, места до соседа 6px — добавляем 1px, не весь горб и не отказ."
+  };
+  var cap = document.getElementById("cap");
+  var buttons = document.querySelectorAll(".plate button");
+  function show(mode) {
+    ["bay", "seam", "void", "clamp"].forEach(function (m) {
+      var g = document.getElementById("viz-" + m);
+      if (g) g.hidden = m !== mode;
+    });
+    cap.textContent = caps[mode];
+    buttons.forEach(function (b) {
+      b.setAttribute("aria-pressed", b.getAttribute("data-mode") === mode ? "true" : "false");
+    });
+  }
+  buttons.forEach(function (b) {
+    b.addEventListener("click", function () { show(b.getAttribute("data-mode")); });
+  });
+})();
+</script>
+</body>
+</html>

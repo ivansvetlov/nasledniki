@@ -311,8 +311,18 @@ function drawOutlineLine(ext) {
 }
 
 async function clipToOutline() {
-  const res = await fetch('/outline_world.json');
+  const params = new URLSearchParams(location.search);
+  const mapId = (params.get('map') || '').trim();
+  let url = '/outline_world.json';
+  if (mapId && mapId !== 'samara') {
+    url = `http://127.0.0.1:8765/v1/maps/${encodeURIComponent(mapId)}/outline`;
+  }
+  const res = await fetch(url);
   const data = await res.json();
+  if (!data.rings || !data.rings.length) {
+    console.error('outline empty', mapId, data);
+    return;
+  }
   smoothClipToOutline(data.rings[0].ext);
   drawOutlineLine(data.rings[0].ext);
 }

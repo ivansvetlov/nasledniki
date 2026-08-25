@@ -739,6 +739,9 @@ def write_bench(raw_svg: str, report: dict, hist: list[dict], paths: list[dict])
       <button type="button" id="btn-smooth" title="сгладить сплайном (Catmull-Rom) · весь проект">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 17c3-4 6 4 9 0s6-4 9 0"/></svg>
       </button>
+      <button type="button" id="btn-spline" title="сделать сплайн: перевести все границы швов из L в нативные C-Безье (мидлайн ±2.5px)">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 15c2-6 5 2 8-3s6-5 10-1"/><circle cx="3" cy="15" r="1.6" fill="currentColor" stroke="none"/><circle cx="21" cy="11" r="1.6" fill="currentColor" stroke="none"/></svg>
+      </button>
       <button type="button" id="btn-marker" title="маркер: нарисовать подсказку поверх карты (клавиша B)">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 20l3-1 9-9-2-2-9 9-1 3z"/><path d="M13 5l2-2 4 4-2 2"/></svg>
       </button>

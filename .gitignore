@@ -1,9 +1,20 @@
-accounts/
-published/
+# Runtime / regenerable / redundant — NOT versioned
+accounts/sessions.json
 accounts/**/sessions.json
+accounts/users.json
+accounts/**/profile.json
+accounts/**/state.json
+accounts/**/*.bak
+prototype/pen-session.jsonl
+prototype/check-history.jsonl
+*.log
+
+# Build / deps
 __pycache__/
 *.pyc
 node_modules/
 .venv/
 prototype/demo3d/three/node_modules/
-*.log
+
+# Published output (regenerable)
+published/

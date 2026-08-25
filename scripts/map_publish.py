@@ -294,3 +294,44 @@ def filter_zones(geom: dict, ids: list[str] | None) -> dict:
 
 def list_maps() -> list[dict]:
     return load_index().get("maps") or []
+
+
+def outline_from_geom(geom: dict) -> dict:
+    """Outer union boundary of all zones -> 3D world space ([-128,128]).
+
+    SVG-local coordinates map straight to the workshop frame: u=x/W, v=y/H,
+    world = (u-0.5)*256, (v-0.5)*256 (same affine as gen_outline.py).
+    """
+    from shapely.geometry import Polygon
+    from shapely.ops import unary_union
+
+    W = float(geom.get("width") or 720)
+    H = float(geom.get("height") or 720)
+    if not W or not H:
+        W, H = 720, 720
+    polys = []
+    for z in geom.get("zones") or []:
+        rings = rings_from_d(z.get("d"))
+        if not rings:
+            continue
+        ring = [(float(x), float(y)) for x, y in rings[0]]
+        if len(ring) < 4:
+            continue
+        p = Polygon(ring)
+        if p.is_valid:
+            polys.append(p)
+    if not polys:
+        return {"type": "outline", "rings": []}
+    u = unary_union(polys)
+    if u.geom_type == "Polygon":
+        big = u
+    elif u.geom_type == "MultiPolygon":
+        big = max(u.geoms, key=lambda g: g.area)
+    else:
+        return {"type": "outline", "rings": []}
+    ring = big.exterior
+    pts = [
+        ((float(x) / W - 0.5) * 256.0, (float(y) / H - 0.5) * 256.0)
+        for x, y in ring.coords
+    ]
+    return {"type": "outline", "rings": [{"ext": pts}]}
