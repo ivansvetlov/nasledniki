@@ -1,7 +1,8 @@
 /* debug_overlay.js — рантайм-слой отладки для map_editor.js.
    НЕ модифицирует map.svg и не попадает в сохранение (отдельный <svg> в #viewport).
-   Обрабатывает ТОЛЬКО слой 1 (районы) для детекции тонких мест.
-   Маркеры карты (data-kind="marker") выделяются отдельным слоем отладки.
+   Обрабатывает ТОЛЬКО слой 1 (районы) для детекции тонких мест и предпросмотра сжатия.
+   Маркеры полностью удалены: applyMarkerStroke в редакторе не создаёт их, а здесь любые
+   оставшиеся path[data-kind="marker"] вырезаются из живого SVG при загрузке и в фоне.
    Управление — через строки в списке слоёв (#layers), без галочек в панели.
    Использует ClipperLib для корректной эрозии при детекции. */
 (function () {
@@ -90,7 +91,7 @@
     }
     var out = [];
     for (var i = 0; i < n; i++) {
-      var prev = w[(i - 1 + n) % n], next = w[(i + 1) % n];
+      var prev = w[(i - 1 + n) % n], next = w[(i + 1 + n) % n];
       out.push(w[i] < thr && w[i] <= prev && w[i] <= next);
     }
     return out;
@@ -150,8 +151,9 @@
   function NS() { return "http://www.w3.org/2000/svg"; }
   function el(name, attrs) { var e = document.createElementNS(NS(), name); for (var k in attrs) e.setAttribute(k, attrs[k]); return e; }
 
-  var state = { detect: true, marker: true, shrink: true, r0: 6, r: 4, ten: 0.8 };
-  function anyOn() { return state.detect || state.marker || state.shrink; }
+  // Маркеры удалены навсегда. Больше нет state.marker, строки «Дебаг · маркер» и рендера маркеров.
+  var state = { detect: false, shrink: false, r0: 6, r: 4, ten: 0.8 };
+  function anyOn() { return state.detect || state.shrink; }
   function getMapSvg() { return document.querySelector("#stage svg:not(#ruler):not(#doodle):not(#pins)"); }
   function getStage() { return document.getElementById("stage"); }
   function getViewport() { return document.getElementById("viewport"); }
@@ -162,7 +164,7 @@
     p.style.cssText = "position:fixed;right:12px;top:12px;z-index:30;background:#1e1e22;color:#ddd;padding:12px 14px;border-radius:10px;font:12px system-ui,sans-serif;box-shadow:0 8px 28px #0006;width:240px;";
     p.innerHTML =
       '<div style="font-weight:600;margin-bottom:4px">Дебаг</div>' +
-      '<div style="color:#aaa;margin-bottom:6px">слой районов (вода не трогается). Включается глазами в списке слоёв.</div>' +
+      '<div style="color:#aaa;margin-bottom:6px">слой районов (вода не трогается). Включается глазами в списке слоёв. Маркеры отключены.</div>' +
       '<label style="display:block;margin:6px 0 2px">чувствительность тонких мест r0 <span id="vR0"></span></label>' +
       '<input id="sR0" type="range" min="2" max="20" step="1" style="width:100%">' +
       '<label style="display:block;margin:6px 0 2px">сжатие r <span id="vR"></span></label>' +
@@ -189,8 +191,6 @@
     if (!layers) return;
     if (!document.getElementById("dbg-det-row")) addLayerRow("dbg-det-row", "Дебаг · тонкие места", "detect", state.detect);
     if (!document.getElementById("dbg-shk-row")) addLayerRow("dbg-shk-row", "Дебаг · сжатие", "shrink", state.shrink);
-    var hasMarkers = svg && svg.querySelectorAll('path[data-kind="marker"]').length > 0;
-    if (hasMarkers && !document.getElementById("dbg-mk-row")) addLayerRow("dbg-mk-row", "Дебаг · маркер", "marker", state.marker);
   }
   function addLayerRow(id, label, key, on) {
     var layers = document.getElementById("layers");
@@ -207,14 +207,17 @@
     var last = heads[heads.length - 1];
     if (last) last.after(row); else layers.appendChild(row);
     row.addEventListener("click", function (e) {
+      // глушим редактор: наша строка не должна триггерить переключение реального слоя
+      e.preventDefault();
       e.stopPropagation();
+      e.stopImmediatePropagation();
       if (e.target.classList.contains("lk") || e.target.classList.contains("tw")) return;
       toggleFeature(key);
     });
   }
   function toggleFeature(key) {
     state[key] = !state[key];
-    var id = key === "detect" ? "dbg-det-row" : key === "shrink" ? "dbg-shk-row" : "dbg-mk-row";
+    var id = key === "detect" ? "dbg-det-row" : "dbg-shk-row";
     var row = document.getElementById(id);
     if (row) {
       row.classList.toggle("off", !state[key]);
@@ -223,8 +226,8 @@
     }
     var panel = document.getElementById("dbg-panel");
     if (panel) panel.style.display = anyOn() ? "block" : "none";
-    if (anyOn()) { startSync(); render(); }
-    else clearOverlay();
+    if (anyOn()) { startSync(); startLoop(); render(); }
+    else { clearOverlay(); stopLoop(); }
   }
   var __layerObs = null;
   function setupLayerObserver() {
@@ -284,10 +287,18 @@
     return overlay;
   }
 
+  // Удаляем любые оставшиеся маркеры из живого SVG (защита от старых сессий/локалстораджа).
+  function stripMarkers() {
+    var svg = getMapSvg(); if (!svg) return;
+    var ms = svg.querySelectorAll('path[data-kind="marker"]');
+    for (var i = 0; i < ms.length; i++) if (ms[i].parentNode) ms[i].parentNode.removeChild(ms[i]);
+  }
+
   function render() {
     var errEl = document.getElementById("dbg-err");
     if (typeof ClipperLib === "undefined") { if (errEl) { errEl.style.display = "block"; errEl.textContent = "ClipperLib не загружен"; } return; }
     if (errEl) errEl.style.display = "none";
+    stripMarkers();
     if (!anyOn()) { clearOverlay(); return; }
     var svg = getMapSvg(); if (!svg) return;
     var ov = ensureOverlay(); if (!ov) return;
@@ -317,14 +328,6 @@
         if (sm.length) ov.appendChild(el("path", { d: fmtC(sm), fill: "rgba(255,153,0,0.18)", stroke: "#f90", "stroke-width": "1.6", "stroke-linejoin": "round", "stroke-linecap": "round" }));
       }
     }
-    if (state.marker) {
-      // все маркеры карты (data-kind="marker"), напр. «Маркер 1»
-      var marks = svg.querySelectorAll('path[data-kind="marker"]');
-      for (var mi = 0; mi < marks.length; mi++) {
-        var md = marks[mi].getAttribute("d"); if (!md) continue;
-        ov.appendChild(el("path", { d: fmt(parsePts(md)), fill: "none", stroke: "#f0f", "stroke-width": "1.8" }));
-      }
-    }
     syncOverlayPos();
     rendered = true;
   }
@@ -333,7 +336,8 @@
     if (!document.getElementById("dbg-panel")) buildPanel();
     ensureLayerRows();
     setupLayerObserver();
-    if (getMapSvg() && anyOn()) render();
+    stripMarkers();
+    startLoop();
   }
   function boot() { if (typeof ClipperLib === "undefined") { loadClipper(); return; } init(); }
   function loadClipper() {
@@ -346,13 +350,28 @@
     s.onerror = function () { var e = document.getElementById("dbg-err"); if (e) { e.style.display = "block"; e.textContent = "не удалось загрузить ClipperLib"; } };
     document.head.appendChild(s);
   }
+
+  // Надёжный цикл: рендерим, только если реально изменилась геометрия слоя 1 или состояние.
+  // Не останавливаемся после первого кадра (старый код гас из-за premature rendered=true).
+  var __loop = null, __lastSig = "";
+  function geomSig() {
+    var svg = getMapSvg(); if (!svg) return "nosvg";
+    var ps = svg.querySelectorAll('[data-layer-id="1"] path[data-name]:not([data-kind])');
+    var s = ps.length + ":";
+    for (var i = 0; i < ps.length; i++) { var d = ps[i].getAttribute("d"); s += (d ? d.length : 0) + ","; }
+    return s;
+  }
+  function loopTick() {
+    if (!anyOn()) { __loop = null; return; }
+    stripMarkers();
+    var sig = geomSig() + "|" + (state.detect ? 1 : 0) + (state.shrink ? 1 : 0) + state.r0 + state.r + state.ten;
+    if (sig !== __lastSig) { __lastSig = sig; render(); }
+    __loop = setTimeout(loopTick, 300);
+  }
+  function startLoop() { if (__loop) return; __lastSig = ""; __loop = setTimeout(loopTick, 60); }
+  function stopLoop() { if (__loop) { clearTimeout(__loop); __loop = null; } }
+
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", function () { setTimeout(boot, 300); });
   else setTimeout(boot, 300);
-  var tries = 0;
-  var iv = setInterval(function () {
-    ensureLayerRows();
-    if (rendered || tries++ > 40) { clearInterval(iv); return; }
-    if (getMapSvg()) { if (typeof ClipperLib === "undefined") loadClipper(); else render(); }
-  }, 500);
   window.addEventListener("resize", function () { if (anyOn()) syncOverlayPos(); });
 })();

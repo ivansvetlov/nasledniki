@@ -1617,33 +1617,11 @@
     buildLayers();
     return true;
   }
+  // Маркеры полностью отключены по требованию: инструмент больше не создаёт
+  // path[data-kind="marker"] (ранее они попадали в активный слой — в т.ч. в «Волгу» —
+  // и не удалялись). Функция-заглушка: рисование маркером ничего не добавляет в карту.
   function applyMarkerStroke() {
-    var L = layerById(activeLayerId);
-    if (!L || L.locked) return false;
-    var g = layerGroup(L.id);
-    if (!g) return false;
-    var pts = strokePts;
-    if (pts.length < 2) return false;
-    snapshotPaths("маркер");
-    sketchSeq++;
-    var dd = ["M" + pts[0].x.toFixed(1) + "," + pts[0].y.toFixed(1)];
-    for (var k = 1; k < pts.length; k++)
-      dd.push("L" + pts[k].x.toFixed(1) + "," + pts[k].y.toFixed(1));
-    var np = document.createElementNS("http://www.w3.org/2000/svg", "path");
-    np.setAttribute("data-kind", "marker");
-    np.setAttribute("data-oid", "m" + sketchSeq);
-    np.setAttribute("data-label", "Маркер " + sketchSeq);
-    np.setAttribute("d", dd.join(" "));
-    np.setAttribute("fill", "none");
-    np.setAttribute("stroke", "#ff3d7f");
-    np.setAttribute("stroke-width", "2");
-    np.setAttribute("stroke-linecap", "round");
-    np.setAttribute("stroke-linejoin", "round");
-    np.setAttribute("data-marker", "1");
-    g.appendChild(np);
-    bindOverlayClicks();
-    buildLayers();
-    return true;
+    return false;
   }
   function applyOverlayErase() {
     var L = layerById(activeLayerId);
@@ -6972,6 +6950,6 @@ var magnetBtn = document.getElementById("btn-magnet");
 })();
 
 </script>
-<script src="debug_overlay.js?v=20260826j"></script>
+<script src="debug_overlay.js?v=20260827a"></script>
 </body>
 </html>
