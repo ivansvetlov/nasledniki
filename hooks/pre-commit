@@ -1,20 +1,53 @@
 #!/bin/sh
-# Pre-commit gate: блокирует коммит, если нарушены инварианты карты samara.
-# Активируется один раз: git config core.hooksPath hooks
+# Pre-commit gate: блокирует коммит, если нарушены инварианты карты samara
+# или обнаружены маркеры (data-kind=marker / data-label=Маркер* / fill=#ff00ff).
+# Активируется один раз на клон: git config core.hooksPath hooks
 ROOT="$(git rev-parse --show-toplevel)"
 PYTHON="${PYTHON:-python}"
 command -v "$PYTHON" >/dev/null 2>&1 || PYTHON=py
 
+SAMARA="accounts/01601a7495be1aed/maps/samara"
 changed="$(git diff --cached --name-only)"
-if printf '%s\n' "$changed" | grep -qE 'map\.svg$|map_editor\.js|verify_map_good\.py|\.good$'; then
-  echo "[pre-commit] меняются файлы карты — запускаю verify_map_good.py"
+
+map_changed=0
+good_changed=0
+for f in $changed; do
+  case "$f" in
+    "$SAMARA/map.svg") map_changed=1 ;;
+    "$SAMARA/map.svg.good") good_changed=1 ;;
+  esac
+done
+
+# 1) Защита от дурака: маркеры никогда не должны попадать в коммит
+marker_pat='data-kind="marker"|data-label="Маркер|fill="#ff00ff"'
+for f in map.svg map.svg.good; do
+  if printf '%s\n' "$changed" | grep -qx "$SAMARA/$f"; then
+    if git grep -E -I --cached -q "$marker_pat" -- "*/$f" 2>/dev/null; then
+      echo "[pre-commit] ZABLOKIROVANO: v $f najden marker (data-kind=marker / Marker / #ff00ff)."
+      echo "              Markery udaleny navsegda — ne kommit'te ih (sm. AGENTS.md, incident #1)."
+      exit 1
+    fi
+  fi
+done
+
+# 2) Invariany kartu (verify_map_good.py)
+if [ "$map_changed" = 1 ] || printf '%s\n' "$changed" | grep -qE 'map_editor\.js|verify_map_good\.py|\.good$'; then
+  echo "[pre-commit] menyayutsya fajly kartu — zapuskayu verify_map_good.py"
   "$PYTHON" "$ROOT/scripts/verify_map_good.py"
   rc=$?
   if [ "$rc" -ne 0 ]; then
-    echo "[pre-commit] ЗАБЛОКИРОВАНО: инварианты карты нарушены."
-    echo "              Исправь карту или перебазируй эталон (copy map.svg map.svg.good), затем коммить."
+    echo "[pre-commit] ZABLOKIROVANO: invarianty kartu narusheny."
+    echo "              Isprav' kartu ili perebaziruy etalon (python scripts/bump_good.py), zatem kommit'."
     exit 1
   fi
-  echo "[pre-commit] инварианты карты OK"
+  echo "[pre-commit] invarianty kartu OK"
 fi
+
+# 3) Napominalka: menyayesh' map.svg, no ne bampish' etalon
+if [ "$map_changed" = 1 ] && [ "$good_changed" = 0 ]; then
+  echo "[pre-commit] VNIMANIE: map.svg izmenen, no map.svg.good — net."
+  echo "              Esli izmenenie strukturnoe i osoznannoe — podnimi etalon:"
+  echo "              python scripts/bump_good.py   (zatem otdel'nyj kommit .good)"
+fi
+
 exit 0
