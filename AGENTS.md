@@ -138,4 +138,12 @@ Invoke-WebRequest -Uri "http://localhost:8765/nasedniki/api/map?map=samara" -Use
   Верификатор (`verify_map_good.py`) ожидает отсутствие C-кривых в `map.svg`.
 - При добавлении новых защит/инвариантов — синхронизировать `*.good` эталоны и
   `verify_map_good.py`, иначе верификатор будет ложно падать.
+- **Защита от дурака (pre-commit):** хук `hooks/pre-commit` активируется один раз
+  на клон — `git config core.hooksPath hooks` (уже сделано в этом рабочем дереве).
+  Он блокирует коммит, если в `map.svg`/`map.svg.good` есть маркеры
+  (`data-kind="marker"` / `Маркер` / `#ff00ff`) либо `verify_map_good.py` падает,
+  и напоминает бампнуть эталон, когда меняется `map.svg` без `map.svg.good`.
+  Обойти намеренно: `git commit --no-verify`.
+- **Поднять эталон:** `python scripts/bump_good.py` копирует `map.svg`/`state.json`
+  в `*.good` и гонит верификатор; изменившиеся `*.good` коммитить отдельно.
 - Коммитить только по явной просьбе пользователя. Ветка: `feat/pencil-volume`.
