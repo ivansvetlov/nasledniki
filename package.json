@@ -1,0 +1,11 @@
+{
+  "name": "nasedniki-map-editor",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {
+    "js-clipper": "^1.0.1"
+  }
+}
