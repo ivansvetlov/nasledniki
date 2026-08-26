@@ -1,3 +1,4 @@
+
 (function () {
   var svg = document.querySelector("#stage svg:not(#ruler):not(#doodle):not(#pins)");
   var canvas = document.getElementById("draw");
@@ -1074,21 +1075,6 @@
         renderPins();
         if (hint)
           hint.textContent = pinHit.isLocked ? "якорь снят" : "жёлтая снята";
-        return;
-      }
-      var pickHit = hitSvgAt(e);
-      var pickKind =
-        pickHit && pickHit.closest && pickHit.closest("text[data-kind],path[data-kind]");
-      var pickName = zoneAtEvent(e);
-      if (pickKind) {
-        selectDistrict(null, false);
-        selectObj(pickKind);
-        showObjectCtx(e.clientX, e.clientY, pickKind);
-        return;
-      }
-      if (pickName) {
-        var pickMap = pos(e);
-        showZoneCtx(e.clientX, e.clientY, pickName, pickMap.x, pickMap.y);
         return;
       }
       var edgeHit = topoFindEdgeAt(pHit);
@@ -2947,6 +2933,7 @@
 
   var SPLINE_OFFSET = SEAM_GAP / 2; // 2.5px
   var SPLINE_SAMPLE = 2; // px along spline when rendering
+  var MID_BUILD_STEP = 4; // px when building the midline
   var PICK_TOL = 14; // px (screen), hit radius for pins / splines
   // Shared-edge detection: a vertex of one ring is "on the seam" when it is
   // within SEAM_DETECT_TOL of the other ring. No hole-closing, no merging:
@@ -3252,10 +3239,12 @@
       topoLog("LOAD", "Edge (" + baseName + " x " + otherName + "): Detected 'C' commands -> Fast-track direct spline load (" + mids.length + " control points).");
     } else {
       var subChain = base.slice(i0, i1 + 1);
+      var n = Math.max(2, Math.round(chainLen(subChain) / MID_BUILD_STEP));
+      var densed = resampleChain(subChain, n);
       mids = [];
-      for (var k = 0; k < subChain.length; k++) {
-        var q = closestOnRing(subChain[k], other);
-        mids.push([(subChain[k][0] + q[0]) / 2, (subChain[k][1] + q[1]) / 2]);
+      for (var k = 0; k < densed.length; k++) {
+        var q = closestOnRing(densed[k], other);
+        mids.push([(densed[k][0] + q[0]) / 2, (densed[k][1] + q[1]) / 2]);
       }
       var mid0 = mids[0];
       var toward = closestOnRing(mid0, base);
@@ -3537,7 +3526,7 @@
     renderDistrictSide(edge.districtB);
   }
   function renderDistrictSide(name) {
-    return; // SPLINE DISABLED: subsystem distorts district geometry on real OSM data
+    // SPLINE DISABLED: kept functional for live seam-drag preview; C persistence blocked via disabled materializeSplines
     var path = pathByName(name);
     if (!path) return;
     var parts = [];
@@ -3650,7 +3639,8 @@
     pushUndo({ type: "topo", id: actionSeq, label: label || "шов", topo: topoSnapshot() });
   }
   function materializeSplines() {
-    if (hint) hint.textContent = "сплайнизация отключена: ломает геометрию районов на реальных данных";
+    // сплайнизация отключена: spline materialization disabled to keep map.svg free of C curves (safe versioning)
+    if (hint) hint.textContent = "сплайны отключены (безопасная версионность)";
     return;
     if (!TOPO || !TOPO.sharedEdges.length) {
       if (hint) hint.textContent = "сплайнов нет — карта ещё не загружена";

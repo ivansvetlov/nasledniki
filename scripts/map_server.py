@@ -147,7 +147,7 @@ class Handler(SimpleHTTPRequestHandler):
         path = u.path.rstrip("/") or "/"
         if path in ("/nasedniki", "/nasedniki/map"):
             self.send_response(302)
-            self.send_header("Location", "/prototype/nasedniki-map.html")
+            self.send_header("Location", "/prototype/cartographer.html")
             self.end_headers()
             return True
         q = parse_qs(u.query)
@@ -255,7 +255,7 @@ class Handler(SimpleHTTPRequestHandler):
                 return
             if u.path == "/" or u.path == "/editor":
                 self.send_response(302)
-                self.send_header("Location", "/prototype/map-bench.html")
+                self.send_header("Location", "/prototype/cartographer.html")
                 self.end_headers()
                 return
             super().do_GET()
@@ -435,7 +435,7 @@ def main() -> int:
     cat.seed_samara()
     _seed_publish()
     httpd = ThreadingHTTPServer((HOST, PORT), Handler)
-    print(f"editor: http://{HOST}:{PORT}/prototype/map-bench.html")
+    print(f"editor: http://{HOST}:{PORT}/prototype/cartographer.html")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
