@@ -1092,7 +1092,6 @@
     activeLayerId = 1;
     applyLayerVisibility();
   }
-  var MARKER_LAYER_NAME = "Маркер";
   function freeLayerId() {
     var used = {};
     Array.prototype.forEach.call(
@@ -1102,69 +1101,6 @@
     var id = layerSeq;
     while (used[id]) id++;
     return id;
-  }
-  function markerGroupEl() {
-    return svg.querySelector('g[data-layer-name="' + MARKER_LAYER_NAME + '"]');
-  }
-  function ensureMarkerLayer() {
-    var L = null;
-    for (var i = 0; i < layerList.length; i++)
-      if (layerList[i].name === MARKER_LAYER_NAME) { L = layerList[i]; break; }
-    var g = markerGroupEl();
-    if (L && g) {
-      // синхронизируем id слоя с реальной группой в DOM (защита от коллизий id,
-      // напр. когда слой 5 из map.svg и «Маркер» оба имеют data-layer-id=5)
-      var gid = parseInt(g.getAttribute('data-layer-id'), 10);
-      if (!isNaN(gid)) L.id = gid;
-      reparentMarkers(L.id);
-      return L;
-    }
-    if (L && !g) {
-      var id2 = freeLayerId();
-      layerSeq = Math.max(layerSeq, id2);
-      L.id = id2;
-      var ng = nsG();
-      ng.setAttribute("data-layer-id", String(id2));
-      ng.setAttribute("data-layer-name", MARKER_LAYER_NAME);
-      ng.setAttribute("data-layer-type", "layer");
-      var st0 = svg.querySelector("#layer-stack");
-      if (st0) st0.appendChild(ng);
-      reparentMarkers(id2);
-      buildLayers();
-      return L;
-    }
-    var id = freeLayerId();
-    layerSeq = Math.max(layerSeq, id);
-    var gg = nsG();
-    gg.setAttribute("data-layer-id", String(id));
-    gg.setAttribute("data-layer-name", MARKER_LAYER_NAME);
-    gg.setAttribute("data-layer-type", "layer");
-    var st = svg.querySelector("#layer-stack");
-    if (st) st.appendChild(gg);
-    L = { id: id, name: MARKER_LAYER_NAME, type: "layer", visible: true, locked: false, collapsed: false };
-    layerList.push(L);
-    reparentMarkers(id);
-    buildLayers();
-    return L;
-  }
-  function reparentMarkers(id) {
-    var g = layerGroup(id);
-    if (!g) return;
-    var list = svg.querySelectorAll('path[data-marker="1"]');
-    for (var i = 0; i < list.length; i++) g.appendChild(list[i]);
-  }
-  function pruneMarkerLayer() {
-    // слой «Маркер» воскресает только если в нём реально есть маркеры;
-    // пустой/осиротевший слой удаляем, чтобы не появлялся после перезагрузки
-    var idx = -1;
-    for (var i = 0; i < layerList.length; i++)
-      if (layerList[i].name === MARKER_LAYER_NAME) { idx = i; break; }
-    var g = svg.querySelector('g[data-layer-name="' + MARKER_LAYER_NAME + '"]');
-    var hasMarkers = svg.querySelectorAll('path[data-marker="1"]').length > 0;
-    if (!hasMarkers) {
-      if (idx >= 0) layerList.splice(idx, 1);
-      if (g && g.parentNode) g.parentNode.removeChild(g);
-    }
   }
   function addEditorLayer(typ) {
     snapshotPaths("новый слой");
@@ -1682,8 +1618,8 @@
     return true;
   }
   function applyMarkerStroke() {
-    var L = ensureMarkerLayer();
-    if (!L) return false;
+    var L = layerById(activeLayerId);
+    if (!L || L.locked) return false;
     var g = layerGroup(L.id);
     if (!g) return false;
     var pts = strokePts;
@@ -5897,7 +5833,6 @@ var magnetBtn = document.getElementById("btn-magnet");
       pendingLayerState = null;
     }
     bindOverlayClicks();
-    pruneMarkerLayer();
     buildLayers();
     renderJournal();
     selectDistrict(null, false);
