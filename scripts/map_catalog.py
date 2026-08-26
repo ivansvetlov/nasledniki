@@ -1897,6 +1897,34 @@ def create_map(query: str, hit: dict | None = None) -> dict:
     return meta
 
 
+def _strip_markers_from_svg(text: str) -> str:
+    import re as _re
+    # Маркеры удалены навсегда: вырезаем любые элементы с data-kind="marker"
+    # или data-label="Маркер*", а также следы тестовых маркеров (заливка #ff00ff).
+    text = _re.sub(r'<(\w+)\b[^>]*\bdata-kind="marker"[^>]*>(?:</\1>)?', "", text)
+    text = _re.sub(r'<(\w+)\b[^>]*\bdata-label="Маркер[^"]*"[^>]*>(?:</\1>)?', "", text)
+    text = _re.sub(r'<path\b[^>]*\bfill="#ff00ff"[^>]*>(?:</path>)?', "", text)
+    return text
+
+
+def _strip_markers_from_state(state):
+    if not isinstance(state, dict):
+        return state
+
+    def walk(o):
+        if isinstance(o, dict):
+            for k in [k for k in o if isinstance(k, str) and k.startswith("Маркер")]:
+                del o[k]
+            for v in o.values():
+                walk(v)
+        elif isinstance(o, list):
+            for v in o:
+                walk(v)
+
+    walk(state)
+    return state
+
+
 def save_project(slug: str, svg: str | None = None, state=None) -> dict:
     if not slug or "/" in slug or "\\" in slug or ".." in slug:
         raise RuntimeError("плохой slug")
@@ -1913,10 +1941,12 @@ def save_project(slug: str, svg: str | None = None, state=None) -> dict:
         text = str(svg)
         if "<svg" not in text:
             raise RuntimeError("не svg")
+        text = _strip_markers_from_svg(text)
         (dest / "map.svg").write_text(text, encoding="utf-8")
         meta["zones"] = text.count("data-name=")
         meta["svg"] = f"maps/{slug}/map.svg"
     if state is not None:
+        state = _strip_markers_from_state(state)
         (dest / "state.json").write_text(
             json.dumps(state, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
