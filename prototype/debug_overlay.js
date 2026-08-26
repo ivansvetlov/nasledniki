@@ -189,7 +189,8 @@
     if (!layers) return;
     if (!document.getElementById("dbg-det-row")) addLayerRow("dbg-det-row", "Дебаг · тонкие места", "detect", state.detect);
     if (!document.getElementById("dbg-shk-row")) addLayerRow("dbg-shk-row", "Дебаг · сжатие", "shrink", state.shrink);
-    if (!document.getElementById("dbg-mk-row")) addLayerRow("dbg-mk-row", "Дебаг · маркер", "marker", state.marker);
+    var hasMarkers = svg && svg.querySelectorAll('path[data-kind="marker"]').length > 0;
+    if (hasMarkers && !document.getElementById("dbg-mk-row")) addLayerRow("dbg-mk-row", "Дебаг · маркер", "marker", state.marker);
   }
   function addLayerRow(id, label, key, on) {
     var layers = document.getElementById("layers");

@@ -1090,7 +1090,6 @@
       ];
     }
     activeLayerId = 1;
-    ensureMarkerLayer();
     applyLayerVisibility();
   }
   var MARKER_LAYER_NAME = "Маркер";
@@ -1153,6 +1152,19 @@
     if (!g) return;
     var list = svg.querySelectorAll('path[data-marker="1"]');
     for (var i = 0; i < list.length; i++) g.appendChild(list[i]);
+  }
+  function pruneMarkerLayer() {
+    // слой «Маркер» воскресает только если в нём реально есть маркеры;
+    // пустой/осиротевший слой удаляем, чтобы не появлялся после перезагрузки
+    var idx = -1;
+    for (var i = 0; i < layerList.length; i++)
+      if (layerList[i].name === MARKER_LAYER_NAME) { idx = i; break; }
+    var g = svg.querySelector('g[data-layer-name="' + MARKER_LAYER_NAME + '"]');
+    var hasMarkers = svg.querySelectorAll('path[data-marker="1"]').length > 0;
+    if (!hasMarkers) {
+      if (idx >= 0) layerList.splice(idx, 1);
+      if (g && g.parentNode) g.parentNode.removeChild(g);
+    }
   }
   function addEditorLayer(typ) {
     snapshotPaths("новый слой");
@@ -2130,7 +2142,6 @@
       activeLayerId = snap.activeLayerId;
       if (snap.layerSeq) layerSeq = snap.layerSeq;
     }
-    ensureMarkerLayer();
     bindOverlayClicks();
     applyLayerVisibility();
     buildLayers();
@@ -5885,8 +5896,8 @@ var magnetBtn = document.getElementById("btn-magnet");
       }
       pendingLayerState = null;
     }
-    ensureMarkerLayer();
     bindOverlayClicks();
+    pruneMarkerLayer();
     buildLayers();
     renderJournal();
     selectDistrict(null, false);
@@ -7026,6 +7037,6 @@ var magnetBtn = document.getElementById("btn-magnet");
 })();
 
 </script>
-<script src="debug_overlay.js?v=20260826i"></script>
+<script src="debug_overlay.js?v=20260826j"></script>
 </body>
 </html>
