@@ -1623,6 +1623,27 @@
   function applyMarkerStroke() {
     return false;
   }
+  // Маркеры удалены навсегда. Любые path[data-kind="marker"] вырезаются из живого SVG
+  // и не захватываются в снимки/оверлеи, а из pendingLayerState (серверный state.json,
+  // включая журнал) вычищаются при загрузке — чтобы старые сессии не «рендерили» их
+  // каждый раз (особенно в слой «Волга», который становится активным после перезагрузки).
+  function isMarkerTag(tag) { return typeof tag === "string" && tag.indexOf('data-kind="marker"') !== -1; }
+  function stripMarkers() {
+    svg.querySelectorAll('path[data-kind="marker"]').forEach(function (el) {
+      if (el.parentNode) el.parentNode.removeChild(el);
+    });
+  }
+  function sanitizePending() {
+    if (!pendingLayerState) return;
+    if (pendingLayerState.overlays) Object.keys(pendingLayerState.overlays).forEach(function (k) {
+      if (k.indexOf("Маркер") === 0) delete pendingLayerState.overlays[k];
+    });
+    if (pendingLayerState.journal && pendingLayerState.journal.forEach) pendingLayerState.journal.forEach(function (sn) {
+      if (sn && sn.snap && sn.snap.overlays) Object.keys(sn.snap.overlays).forEach(function (k) {
+        if (k.indexOf("Маркер") === 0) delete sn.snap.overlays[k];
+      });
+    });
+  }
   function applyOverlayErase() {
     var L = layerById(activeLayerId);
     if (!L || L.locked) return false;
@@ -1961,6 +1982,7 @@
   function currentOverlays() {
     var o = {};
     svg.querySelectorAll("[data-kind]").forEach(function (el) {
+      if (el.getAttribute("data-kind") === "marker") return;
       var k =
         el.getAttribute("data-label") ||
         el.getAttribute("data-kind") + "#" + (el.getAttribute("data-oid") || "");
@@ -2004,6 +2026,7 @@
     bindPathClick(neu);
   }
   function upsertOverlay(key, tag) {
+    if (isMarkerTag(tag) || (key && key.indexOf("Маркер") === 0)) return;
     var old = null;
     svg.querySelectorAll("[data-kind]").forEach(function (el) {
       var k =
@@ -2022,6 +2045,7 @@
   }
   function restoreSnapshot(snap) {
     if (!snap) return;
+    stripMarkers();
     var want = snap.paths || {};
     var present = {};
     Object.keys(want).forEach(function (n) {
@@ -5810,6 +5834,7 @@ var magnetBtn = document.getElementById("btn-magnet");
       }
       pendingLayerState = null;
     }
+    stripMarkers();
     bindOverlayClicks();
     buildLayers();
     renderJournal();
@@ -6255,6 +6280,7 @@ var magnetBtn = document.getElementById("btn-magnet");
         if (op !== mapOp) return;
         if (mapHits) mapHits.innerHTML = "";
         pendingLayerState = j.state || null;
+        sanitizePending();
         currentSlug = (j.map && j.map.slug) || m.slug;
         remountSvg(j.svg);
         setMapChrome(j.map || m);
