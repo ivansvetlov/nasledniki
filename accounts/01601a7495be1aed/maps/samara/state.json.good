@@ -452,9 +452,7 @@
               "layer": "3"
             }
           },
-          "overlays": {
-            "Маркер 1": "<path data-kind=\"marker\" data-oid=\"m1\" data-label=\"Маркер 1\" d=\"M122.7,263.4 L170.4,292.0 L237.2,330.2\" fill=\"none\" stroke=\"#ff3d7f\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" data-marker=\"1\"></path>"
-          },
+          "overlays": {},
           "layers": [
             {
               "id": 1,
@@ -616,9 +614,7 @@
               "layer": "3"
             }
           },
-          "overlays": {
-            "Маркер 1": "<path data-kind=\"marker\" data-oid=\"m1\" data-label=\"Маркер 1\" d=\"M122.7,263.4 L170.4,292.0 L237.2,330.2\" fill=\"none\" stroke=\"#ff3d7f\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" data-marker=\"1\"></path>"
-          },
+          "overlays": {},
           "layers": [
             {
               "id": 1,
@@ -780,9 +776,7 @@
               "layer": "3"
             }
           },
-          "overlays": {
-            "Маркер 1": "<path data-kind=\"marker\" data-oid=\"m1\" data-label=\"Маркер 1\" d=\"M122.7,263.4 L170.4,292.0 L237.2,330.2\" fill=\"none\" stroke=\"#ff3d7f\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" data-marker=\"1\"></path>"
-          },
+          "overlays": {},
           "layers": [
             {
               "id": 1,
