@@ -375,6 +375,8 @@ def write_bench(raw_svg: str, report: dict, hist: list[dict], paths: list[dict])
     svg_html = raw_svg
     svg_html = re.sub(r'\swidth="[^"]*"', "", svg_html, count=1)
     svg_html = re.sub(r'\sheight="[^"]*"', "", svg_html, count=1)
+    # встроенный svg — только фолбэк до remountSvg, скрыт чтобы не мигал при F5
+    svg_html = re.sub(r"<svg", '<svg style="display:none"', svg_html, count=1)
     js = (ROOT / "scripts" / "map_editor.js").read_text(encoding="utf-8")
     page = f"""<!DOCTYPE html>
 <html lang="ru">
@@ -437,6 +439,26 @@ def write_bench(raw_svg: str, report: dict, hist: list[dict], paths: list[dict])
   .jitem.now {{ background:#E5F3FF; font-weight:600; }}
   .jitem.future {{ color:#aaa; }}
   .jitem.future:hover {{ background:#f7f7f7; color:#666; }}
+  #copies {{ border-top:1px solid var(--line); flex-shrink:0; background:#fff; }}
+  #copies .fold-hd {{ display:flex; align-items:center; gap:4px; }}
+  #copies-toggle {{ flex:1; display:flex; align-items:center; gap:8px; text-align:left;
+    border:0; background:transparent; padding:8px 10px; cursor:pointer; font:inherit; color:var(--ink); }}
+  #copies-toggle:hover {{ background:#f7f7f7; }}
+  #copies-toggle .jttl {{ font-weight:600; font-size:13px; flex:1; }}
+  #copies .jchev {{ color:#888; font-size:11px; }}
+  #copies .jchev::before {{ content:"▸"; }}
+  #copies.open .jchev::before {{ content:"▾"; }}
+  #copies-list {{ display:none; max-height:220px; overflow:auto; padding:0 8px 10px; }}
+  #copies.open #copies-list {{ display:block; }}
+  .cpy {{ display:flex; align-items:center; gap:6px; padding:6px 8px; border-radius:8px; }}
+  .cpy:hover {{ background:#f7f7f7; }}
+  .cpy .cname {{ flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:600; }}
+  .cpy .cmeta {{ font-size:11px; color:var(--mute); flex-shrink:0; }}
+  .cpy a {{ text-decoration:none; color:var(--acc); font-size:12px; flex-shrink:0; padding:2px 5px; border-radius:6px; }}
+  .cpy a:hover {{ background:#E5F3FF; }}
+  #copy-now {{ width:26px; height:26px; border:0; background:transparent; cursor:pointer; border-radius:6px; }}
+  #copy-now:hover {{ background:#e8f2ff; }}
+  #copies-empty {{ font-size:12px; color:var(--mute); padding:4px 8px; }}
   .jitem .jnow {{ font-size:10px; font-weight:500; color:var(--acc); }}
   .ltools {{ display:flex; gap:4px; }}
   .ltools button {{ width:28px; height:28px; border:1px solid var(--line); border-radius:8px; background:#fff; cursor:pointer; font:600 12px var(--font); }}
@@ -482,13 +504,20 @@ def write_bench(raw_svg: str, report: dict, hist: list[dict], paths: list[dict])
   #stage {{ position:absolute; left:0; top:0; transform-origin:0 0; }}
   #stage svg {{ display:block; width:100%; height:auto; overflow:visible; }}
   #ruler {{ position:absolute; left:0; top:0; width:100%; height:100%; pointer-events:none; z-index:5; overflow:visible; }}
+  #doodle {{ position:absolute; left:0; top:0; width:100%; height:100%; pointer-events:none; z-index:4; overflow:visible; }}
+  #doodle path {{ fill:none; stroke:#111; vector-effect:non-scaling-stroke; stroke-linecap:round; stroke-linejoin:round; }}
+  #pins {{ position:absolute; left:0; top:0; width:100%; height:100%; pointer-events:none; z-index:6; overflow:visible; }}
+  #pins .pin {{ fill:#e03131; stroke:#fff; stroke-width:1.5; }}
+  #pins .pin.yellow {{ fill:#f5c400; }}
+  #pins .pin.ghost {{ fill:#e03131; opacity:.4; }}
+  #pins .mouth {{ stroke:#e03131; stroke-width:1; stroke-dasharray:4 3; opacity:.45; }}
   #ruler line {{ stroke:#0D99FF; stroke-width:1; stroke-linecap:butt;
     vector-effect:non-scaling-stroke; }}
   #ruler .mark {{ fill:#fff; stroke:#0D99FF; stroke-width:1.5; }}
   #ruler .mark.snap {{ fill:#0D99FF; }}
   #ruler text {{ font:600 12px ui-monospace,Consolas,monospace; fill:#0D99FF;
     paint-order:stroke fill; stroke:#fff; stroke-width:3px; }}
-  #stage path.sel {{ stroke:var(--acc); stroke-width:2; }}
+  #stage path.sel {{ stroke:var(--acc); stroke-width:0.67; }}
   #stage text[data-kind] {{ cursor:move; user-select:none; }}
   #stage text[data-kind].sel {{ stroke:#0D99FF; stroke-width:3px; paint-order:stroke fill; }}
   .txt-edit {{ position:fixed; z-index:41; min-width:120px; height:28px; border:1px solid #cfe8ff;
@@ -524,10 +553,40 @@ def write_bench(raw_svg: str, report: dict, hist: list[dict], paths: list[dict])
   .map-item.on .dot {{ background:var(--acc); }}
   .map-item .meta {{ font-size:11px; color:var(--mute); }}
   .map-item .pname {{ font-weight:600; }}
+  .app.sb-collapsed {{ grid-template-columns:var(--rail) 1fr; }}
+  .app.sb-collapsed .left {{ display:none; }}
+  .map-item {{ position:relative; }}
+  .map-item.min .map-item-btn .dot, .map-item.min .meta {{ display:none; }}
+  .map-item.min .map-item-btn {{ padding:4px 10px; }}
+  .map-item.min .nest {{ display:none; }}
+  .map-item.dragging {{ opacity:.45; }}
+  .map-item.drag-over {{ border-color:var(--acc); }}
+  #new-project {{ position:fixed; inset:0; z-index:60; display:none; align-items:center; justify-content:center;
+    background:rgba(20,26,36,.45); }}
+  #new-project.show {{ display:flex; }}
+  #np-card {{ width:440px; max-width:92vw; background:#fff; border-radius:14px; box-shadow:0 18px 50px rgba(0,0,0,.25); overflow:hidden; }}
+  #np-head {{ padding:14px 16px; border-bottom:1px solid var(--line); display:flex; align-items:center; justify-content:space-between; }}
+  #np-head h2 {{ font-size:15px; }}
+  #np-close {{ border:0; background:transparent; font-size:18px; cursor:pointer; color:var(--mute); }}
+  #np-body {{ padding:14px 16px; }}
+  #np-body label {{ display:block; font-size:12px; color:var(--mute); margin:10px 0 4px; }}
+  #np-body input[type=text], #np-body input[type=search] {{ width:100%; height:34px; border:1px solid var(--line);
+    border-radius:8px; padding:0 10px; font:inherit; }}
+  #np-body .row {{ display:flex; gap:8px; }}
+  #np-hits {{ margin-top:8px; max-height:180px; overflow:auto; }}
+  #np-hits .hit {{ display:block; width:100%; text-align:left; padding:7px 10px; border:1px solid var(--line);
+    border-radius:8px; background:#fff; margin-bottom:4px; cursor:pointer; font:inherit; }}
+  #np-hits .hit:hover {{ background:#E5F3FF; }}
+  #np-foot {{ padding:12px 16px; border-top:1px solid var(--line); display:flex; justify-content:flex-end; gap:8px; }}
+  #np-foot button {{ height:32px; padding:0 14px; border-radius:8px; border:1px solid var(--line); background:#fff; cursor:pointer; font:inherit; }}
+  #np-foot .primary {{ background:var(--acc); color:#fff; border-color:var(--acc); }}
+  #np-foot button:disabled {{ opacity:.5; cursor:default; }}
+  #np-err {{ color:#c0392b; font-size:12px; min-height:16px; margin-top:6px; }}
   #map-search {{ display:none; padding:10px 12px 14px; position:relative; flex-shrink:0;
     border-top:1px solid var(--line); background:#fff; }}
-  #maps-box #map-search {{ display:block; }}
+  #map-search.show {{ display:block; }}
   #map-search.busy .qrow, #map-search.busy #map-hits {{ opacity:.4; pointer-events:none; }}
+  #map-search .msub {{ font-size:12px; font-weight:600; color:var(--ink); margin-bottom:2px; }}
   #map-search-target {{ font-size:11px; color:var(--mute); margin-bottom:8px; }}
   .spin {{ width:22px; height:22px; border:3px solid #cfe8ff; border-top-color:var(--acc);
     border-radius:50%; animation:spin .7s linear infinite; }}
@@ -560,7 +619,7 @@ def write_bench(raw_svg: str, report: dict, hist: list[dict], paths: list[dict])
 </style>
 </head>
 <body>
-<div id="auth-gate">
+<div id="auth-gate" class="hidden">
   <div id="auth-card">
     <h1>Аккаунт</h1>
     <div class="sub">проекты сохраняются и остаются после перезагрузки</div>
@@ -574,9 +633,30 @@ def write_bench(raw_svg: str, report: dict, hist: list[dict], paths: list[dict])
   </div>
 </div>
 <div class="app">
+  <div id="new-project">
+    <div id="np-card">
+      <div id="np-head"><h2>Новый проект</h2><button type="button" id="np-close" title="закрыть">✕</button></div>
+      <div id="np-body">
+        <label>Название проекта (необязательно)</label>
+        <input type="text" id="np-name" placeholder="напр. «Самарская область — весна 2026»">
+        <label>Или создай из объекта OpenStreetMap</label>
+        <div class="row">
+          <input type="search" id="np-q" placeholder="район, город, область" autocomplete="off">
+        </div>
+        <div id="np-hits"></div>
+        <div id="np-err"></div>
+      </div>
+      <div id="np-foot">
+        <button type="button" id="np-empty">Создать пустой</button>
+        <button type="button" id="np-create" class="primary" disabled>Создать из объекта</button>
+        <button type="button" id="np-cancel">Отмена</button>
+      </div>
+    </div>
+  </div>
   <nav class="rail">
     <div class="logo" title="Карта"></div>
     <button type="button" id="rail-maps" class="on"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="2"/><path d="M8 9h8M8 13h5"/></svg>Проекты</button>
+    <button type="button" id="rail-collapse" title="свернуть/развернуть сайдбар"><svg viewBox="0 0 24 24"><path d="M14 6l-6 6 6 6"/></svg></button>
   </nav>
   <aside class="left">
     <div id="maps-box">
@@ -608,6 +688,7 @@ def write_bench(raw_svg: str, report: dict, hist: list[dict], paths: list[dict])
         <div id="journal"></div>
       </div>
       <div id="map-search">
+        <div class="msub">Добавить из OSM</div>
         <div id="map-search-target">загрузка в текущий проект</div>
         <div class="qrow">
           <input id="map-q" type="search" placeholder="район, город, область" autocomplete="off">
@@ -620,6 +701,18 @@ def write_bench(raw_svg: str, report: dict, hist: list[dict], paths: list[dict])
           <span id="map-load-txt">загружаю…</span>
         </div>
       </div>
+      <div id="copies">
+        <div class="fold-hd">
+          <button type="button" id="copies-toggle" title="копии карт (снимки)">
+            <span class="jttl">Копии</span>
+            <span class="jchev"></span>
+          </button>
+          <div class="ltools">
+            <button type="button" id="copy-now" title="сохранить копию текущего проекта">💾</button>
+          </div>
+        </div>
+        <div id="copies-list"></div>
+      </div>
     </div>
   </aside>
   <div id="viewport">
@@ -627,10 +720,12 @@ def write_bench(raw_svg: str, report: dict, hist: list[dict], paths: list[dict])
       {svg_html}
       <canvas id="draw"></canvas>
       <svg id="ruler" xmlns="http://www.w3.org/2000/svg"></svg>
+      <svg id="doodle" xmlns="http://www.w3.org/2000/svg"></svg>
+      <svg id="pins" xmlns="http://www.w3.org/2000/svg"></svg>
     </div>
     <div id="cross"><div class="h"></div><div class="v"></div></div>
     <div id="xy"></div>
-    <div id="hint">Shift+клик по двум телам на одном слое, ПКМ — объединить</div>
+    <div id="hint">ПКМ — красная на границе; ЛКМ между двумя соседними — жёлтая; ПКМ по точке — удалить</div>
     <div class="dock">
       <button type="button" id="btn-pick" class="on" title="выбор · клавиша V (любая раскладка)">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M4 3l8 18 2-7 7-2z"/></svg>
@@ -638,16 +733,10 @@ def write_bench(raw_svg: str, report: dict, hist: list[dict], paths: list[dict])
       <button type="button" id="btn-pen" title="карандаш · клавиша P (любая раскладка)">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 20l4-1 11-11-3-3L5 16l-1 4z"/></svg>
       </button>
-      <button type="button" id="btn-erase" title="ластик: стереть в подложку, толщина кисти E">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 16l8-8 6 6-8 8H6l-2-2z"/></svg>
-      </button>
-      <button type="button" id="btn-knife" title="нож: рез толщиной щели карты K">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 20L20 4M9 4h6v4H9z"/></svg>
-      </button>
       <button type="button" id="btn-ruler" title="линейка: расстояние в px R">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 20L20 4M8 16l2 2M12 12l2 2M16 8l2 2"/></svg>
       </button>
-      <button type="button" id="btn-smooth" title="сгладить сплайном (Catmull-Rom) · выбранные или все">
+      <button type="button" id="btn-smooth" title="сгладить сплайном (Catmull-Rom) · весь проект">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 17c3-4 6 4 9 0s6-4 9 0"/></svg>
       </button>
       <button type="button" id="btn-marker" title="маркер: нарисовать подсказку поверх карты (клавиша B)">

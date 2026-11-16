@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>стыки — зазор 5px</title>
+<link rel="stylesheet" href="theme.css?v=20260828s">
+<style>
+  html, body { margin: 0; padding: 0; }
+  body.has-topnav .window { max-width: none !important; margin: 0 !important; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+  body.has-topnav .content { padding: 0 !important; }
+  body.has-topnav { overflow: hidden; }
+  .copybar {
+    flex: 0 0 auto; font: 11px/1.35 ui-monospace, monospace;
+    padding: 7px 14px; background: var(--card-2); border-bottom: 1px solid var(--border);
+    color: var(--foreground); cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .copybar:hover { color: var(--accent); }
+  .copybar .hint { color: var(--muted-foreground); margin-right: 8px; }
+  .layout { display: flex; min-height: calc(100vh - 78px); }
+  .sidebar {
+    width: min(640px, 50vw); flex: 0 0 auto; height: calc(100vh - 78px);
+    background: var(--card); border-right: 1px solid var(--border);
+    display: flex; flex-direction: column;
+  }
+  .side-split { display: flex; flex: 1; min-height: 0; min-width: 0; }
+  .param-dock {
+    flex: 0 0 250px; width: 250px; min-width: 0; overflow: hidden; padding: 8px 8px 10px 10px;
+    display: flex; flex-direction: column; border-right: 1px solid var(--border);
+  }
+  .param-box { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden;
+    background: var(--card-2); border: 1px solid var(--border); border-radius: 10px; padding: 8px; }
+  .anim-dock {
+    flex: 1 1 auto; min-width: 0; padding: 10px 12px 12px;
+    display: flex; flex-direction: column; gap: 6px;
+    background: linear-gradient(180deg, hsl(240 6% 11%), hsl(240 8% 7%));
+  }
+  .anim-dock h4 { margin: 0; font-size: 14px; font-weight: 600; }
+  .anim-dock .anim-val { font: 600 12px/1.3 ui-monospace, monospace; color: var(--accent); }
+  .anim-dock p { margin: 0; font-size: 12px; color: var(--muted-foreground); line-height: 1.35; }
+  .anim-dock svg {
+    display: block; width: min(100%, 260px); aspect-ratio: 1 / 1; height: auto;
+    flex: 0 0 auto; align-self: center; max-height: min(240px, 32vh);
+    background: hsl(240 9% 6%); border-radius: 10px; border: 1px solid var(--border);
+  }
+  #pluginKnobs { flex: 1 1 auto; min-height: 0; overflow-y: auto;
+    scrollbar-width: thin; scrollbar-color: hsl(211 100% 50% / .45) hsl(240 8% 8%); }
+  #pluginKnobs .knob { display: none; }
+  .qhelp {
+    flex:0 0 auto; width:18px; height:18px; padding:0; border-radius:50%;
+    border:1px solid hsl(211 100% 50% / .4); background:hsl(211 100% 50% / .14);
+    color:var(--accent); font:700 11px/18px ui-sans-serif,sans-serif; cursor:pointer; text-align:center;
+  }
+  .qhelp:hover, .qhelp[aria-expanded="true"] { background:hsl(211 100% 50% / .3); }
+  .knob .klab { display:flex; align-items:center; gap:6px; }
+  .knob.is-active { box-shadow: inset 2px 0 0 var(--accent); }
+  .param-actions { display: flex; gap: 6px; margin-bottom: 6px; }
+  .param-actions .btn { flex: 1; padding: 5px 8px; font-size: 12px; }
+  .stack-head { font-size: 11px; color: var(--muted-foreground); text-transform: uppercase; letter-spacing: .04em; margin: 0 0 6px; }
+  .stack-list { flex: 1 1 auto; min-height: 80px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px;
+    scrollbar-width: thin; scrollbar-color: hsl(211 100% 50% / .45) hsl(240 8% 8%); }
+  .stack-row {
+    display: grid; grid-template-columns: 20px 1fr repeat(4, 20px); align-items: center; gap: 2px;
+    padding: 2px 4px; border: 1px solid var(--border); border-radius: 7px; background: var(--card); font-size: 11px; cursor: pointer;
+  }
+  .stack-row.is-active { background: hsl(211 100% 50% / .10); box-shadow: inset 2px 0 0 var(--accent); }
+  .stack-row.off { opacity: .42; }
+  .stack-row button {
+    width: 20px; height: 20px; padding: 0; border-radius: 6px; cursor: pointer;
+    border: 1px solid hsl(211 100% 50% / .35); background: hsl(211 100% 50% / .12); color: var(--accent); font-size: 11px;
+  }
+  .stack-add { display: flex; gap: 6px; margin: 6px 0; flex: 0 0 auto; }
+  .stack-add .select { flex: 1; min-width: 0; }
+  .insp-empty { font-size: 12px; color: var(--muted-foreground); }
+  .param-box .knob { display: none; }
+  .knob { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 4px 10px; padding: 5px 0; border-top: 1px solid var(--border); }
+  .knob label { color: var(--muted-foreground); font-size: 12px; }
+  .knob .kval { font: 600 13px/1 ui-monospace, monospace; color: var(--accent); }
+  .knob input[type=range] { grid-column: 1 / -1; width: 100%; }
+  .stage { flex: 1; min-width: 0; padding: 14px 18px 24px; overflow-y: auto; max-height: calc(100vh - 78px); }
+  .cards { display: flex; gap: 12px; flex-wrap: wrap; }
+  .bcard { background: var(--card-2); border: 1px solid var(--border); border-radius: 8px; padding: 8px; width: 280px; }
+  .bcard.hot { border-color: hsl(211 100% 50% / .55); }
+  .bcanvas { display: block; margin: 0 auto 4px; background: hsl(240 9% 6%); border-radius: 6px; }
+  .blabel { font-size: 12px; color: var(--foreground); }
+  .bmet { font: 11px/1.4 ui-monospace, monospace; color: var(--muted-foreground); min-height: 2.6em; }
+  .metrics { font: 12px/1.5 ui-monospace, monospace; background: var(--card-2); border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; margin: 0 0 12px; }
+  .sec { margin-top: 14px; }
+  .note { color: var(--muted-foreground); font-size: 12px; max-width: 720px; }
+</style>
+</head>
+<body>
+<div class="window">
+  <div class="content">
+    <div class="copybar" id="liveParams" title="клик — копировать JSON стека стыка">загрузка…</div>
+    <div class="layout">
+      <aside class="sidebar">
+        <div class="side-split">
+        <div class="param-dock">
+          <div class="param-box">
+            <div class="param-actions">
+              <button class="btn" id="resetStart">сброс</button>
+              <button class="btn" id="copyState">копировать</button>
+            </div>
+            <div class="stack-head">Стек стыка</div>
+            <div id="stackList" class="stack-list"></div>
+            <div class="stack-add">
+              <select id="stackAddType" class="select"></select>
+              <button class="btn" id="stackAdd">добавить</button>
+            </div>
+          </div>
+        </div>
+        <div class="anim-dock" id="animDock">
+          <h4 id="helpTitle">Шаг стыка</h4>
+          <div class="anim-val" id="animVal">выбери шаг в стеке</div>
+          <svg id="helpSvg" viewBox="0 0 240 240" preserveAspectRatio="xMidYMid meet" aria-hidden="true"></svg>
+          <p id="helpBody">Анимация выбранного действия. Ползунок задаёт, насколько далеко крутится петля.</p>
+          <div id="pluginKnobs">
+            <p class="insp-empty" id="inspEmpty" style="display:none"></p>
+            <div class="knob"><div class="klab"><label for="target">цель зазора</label><button type="button" class="qhelp" data-help="target" aria-label="Справка: цель зазора">?</button></div><span class="kval"><span id="vTarget">5</span> px</span><input id="target" type="range" min="2" max="12" step="0.5" value="5"></div>
+            <div class="knob"><div class="klab"><label for="lock">замок ±</label><button type="button" class="qhelp" data-help="lock" aria-label="Справка: замок">?</button></div><span class="kval"><span id="vLock">0.35</span> px</span><input id="lock" type="range" min="0.1" max="1.5" step="0.05" value="0.35"></div>
+            <div class="knob"><div class="klab"><label for="springK">жёсткость пружины</label><button type="button" class="qhelp" data-help="springK" aria-label="Справка: жёсткость">?</button></div><span class="kval" id="vK">0.35</span><input id="springK" type="range" min="0.05" max="1" step="0.05" value="0.35"></div>
+            <div class="knob"><div class="klab"><label for="share">доля соседа</label><button type="button" class="qhelp" data-help="share" aria-label="Справка: доля соседа">?</button></div><span class="kval" id="vShare">0.5</span><input id="share" type="range" min="0" max="1" step="0.05" value="0.5"></div>
+            <div class="knob"><div class="klab"><label for="springIters">итерации</label><button type="button" class="qhelp" data-help="springIters" aria-label="Справка: итерации">?</button></div><span class="kval" id="vIters">6</span><input id="springIters" type="range" min="1" max="20" step="1" value="6"></div>
+            <div class="knob"><div class="klab"><label for="maxStep">потолок шага</label><button type="button" class="qhelp" data-help="maxStep" aria-label="Справка: потолок шага">?</button></div><span class="kval"><span id="vMax">2.2</span> px</span><input id="maxStep" type="range" min="0.2" max="6" step="0.1" value="2.2"></div>
+            <div class="knob"><div class="klab"><label for="tol">порог соседства</label><button type="button" class="qhelp" data-help="tol" aria-label="Справка: порог соседства">?</button></div><span class="kval"><span id="vTol">22</span> px</span><input id="tol" type="range" min="8" max="40" step="1" value="22"></div>
+            <div class="knob"><div class="klab"><label for="minRun">мин. длина шва</label><button type="button" class="qhelp" data-help="minRun" aria-label="Справка: мин. длина шва">?</button></div><span class="kval" id="vMinRun">3</span><input id="minRun" type="range" min="2" max="12" step="1" value="3"></div>
+            <div class="knob"><div class="klab"><label for="turnDeg">порог поворота</label><button type="button" class="qhelp" data-help="turnDeg" aria-label="Справка: порог поворота">?</button></div><span class="kval"><span id="vTurn">28</span>°</span><input id="turnDeg" type="range" min="5" max="80" step="1" value="28"></div>
+            <div class="knob"><div class="klab"><label for="turnPow">крутизна затвора</label><button type="button" class="qhelp" data-help="turnPow" aria-label="Справка: крутизна затвора">?</button></div><span class="kval" id="vPow">1</span><input id="turnPow" type="range" min="0.3" max="3" step="0.1" value="1"></div>
+            <div class="knob"><div class="klab"><label for="endPad">якоря концов</label><button type="button" class="qhelp" data-help="endPad" aria-label="Справка: якоря концов">?</button></div><span class="kval" id="vPad">2</span><input id="endPad" type="range" min="0" max="8" step="1" value="2"></div>
+            <div class="knob"><div class="klab"><label for="overlapBoost">буст перекрытия</label><button type="button" class="qhelp" data-help="overlapBoost" aria-label="Справка: буст перекрытия">?</button></div><span class="kval" id="vOv">1.6</span><input id="overlapBoost" type="range" min="1" max="4" step="0.1" value="1.6"></div>
+            <div class="knob"><div class="klab"><label for="eqAmt">выравнивание</label><button type="button" class="qhelp" data-help="eqAmt" aria-label="Справка: выравнивание">?</button></div><span class="kval" id="vEq">0.3</span><input id="eqAmt" type="range" min="0" max="1" step="0.05" value="0.3"></div>
+            <div class="knob"><div class="klab"><label for="smoothAmt">сглаживание шва</label><button type="button" class="qhelp" data-help="smoothAmt" aria-label="Справка: сглаживание">?</button></div><span class="kval" id="vSm">0.22</span><input id="smoothAmt" type="range" min="0" max="0.8" step="0.02" value="0.22"></div>
+            <div class="knob"><div class="klab"><label for="pocket">карман тройника</label><button type="button" class="qhelp" data-help="pocket" aria-label="Справка: карман тройника">?</button></div><span class="kval" id="vPk">0.45</span><input id="pocket" type="range" min="0" max="1" step="0.05" value="0.45"></div>
+            <div class="knob"><div class="klab"><label for="preserve">верность стилю</label><button type="button" class="qhelp" data-help="preserve" aria-label="Справка: верность стилю">?</button></div><span class="kval" id="vPr">0.12</span><input id="preserve" type="range" min="0" max="0.8" step="0.02" value="0.12"></div>
+            <div class="knob"><div class="klab"><label for="areaMix">держать площадь</label><button type="button" class="qhelp" data-help="areaMix" aria-label="Справка: площадь">?</button></div><span class="kval" id="vAr">0.25</span><input id="areaMix" type="range" min="0" max="1" step="0.05" value="0.25"></div>
+            <div class="knob"><div class="klab"><label for="antiPinch">антизащемление</label><button type="button" class="qhelp" data-help="antiPinch" aria-label="Справка: антизащемление">?</button></div><span class="kval"><span id="vAp">8</span> px</span><input id="antiPinch" type="range" min="0" max="20" step="1" value="8"></div>
+            <div class="knob"><div class="klab"><label for="minAngle">мин. угол</label><button type="button" class="qhelp" data-help="minAngle" aria-label="Справка: мин. угол">?</button></div><span class="kval"><span id="vMa">12</span>°</span><input id="minAngle" type="range" min="5" max="40" step="1" value="12"></div>
+            <div class="knob"><div class="klab"><label for="cAngle">фаска шва</label><button type="button" class="qhelp" data-help="cAngle" aria-label="Справка: фаска шва">?</button></div><span class="kval"><span id="vCa">50</span>°</span><input id="cAngle" type="range" min="30" max="120" step="1" value="50"></div>
+            <div class="knob"><div class="klab"><label for="splT">натяжение фаски</label><button type="button" class="qhelp" data-help="splT" aria-label="Справка: натяжение фаски">?</button></div><span class="kval" id="vSt">1</span><input id="splT" type="range" min="0" max="1" step="0.05" value="1"></div>
+            <div class="knob"><div class="klab"><label for="cSpeed">плотность фаски</label><button type="button" class="qhelp" data-help="cSpeed" aria-label="Справка: плотность фаски">?</button></div><span class="kval" id="vSp">4</span><input id="cSpeed" type="range" min="2" max="10" step="1" value="4"></div>
+            <div class="knob"><div class="klab"><label for="splineTen">сплайн шва</label><button type="button" class="qhelp" data-help="splineTen" aria-label="Справка: сплайн шва">?</button></div><span class="kval" id="vSpt">0.7</span><input id="splineTen" type="range" min="0" max="1" step="0.05" value="0.7"></div>
+            <div class="knob"><div class="klab"><label for="splineStep">шаг сплайна</label><button type="button" class="qhelp" data-help="splineStep" aria-label="Справка: шаг сплайна">?</button></div><span class="kval" id="vSps">2</span><input id="splineStep" type="range" min="1" max="8" step="1" value="2"></div>
+          </div>
+        </div>
+        </div>
+      </aside>
+      <main class="stage">
+        <div class="eyebrow">стыковка районов</div>
+        <h1 class="title">Зазор 5 px</h1>
+        <p class="sub">Стилизованные границы компрессора не трогаем как эталон. Стек стыка двигает только live: притягивает/отталкивает до 5 px и запирает. Тройник — вогнутый карман, не 5 px вдоль.</p>
+        <div class="metrics" id="metrics">считаю пары…</div>
+        <details class="sec" open>
+          <summary><span class="sec-title">Пары</span></summary>
+          <div id="pairCards" class="cards"></div>
+        </details>
+        <details class="sec" open>
+          <summary><span class="sec-title">Тройники</span></summary>
+          <div id="tripCards" class="cards"></div>
+          <p class="note">Тройник — место, где три района смотрят друг на друга. Цель не 5 px в точке, а маленький равносторонний карман с вогнутыми стенками.</p>
+        </details>
+      </main>
+    </div>
+  </div>
+</div>
+<script src="districts_real.js?v=20260828h"></script>
+<script src="corners.js?v=20260829y"></script>
+<script src="compressor.js?v=20260829g"></script>
+<script src="stack-ui.js?v=20260829f"></script>
+<script src="seams.js?v=20260829a"></script>
+<script src="nav.js?v=20260829s"></script>
+<script src="seam-plugins.js?v=20260829b"></script>
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.13.0/dist/gsap.min.js"></script>
+<script src="seam-help.js?v=20260829a"></script>
+<script>
+const C = window.Compressor, S = window.Seams;
+const PAL = ['#4fb0e0', '#e8a23a', '#6ee7b7', '#ff7ad9', '#9ad0f0'];
+
+function syncSeamLabels(){
+  const set = (id, vid) => { const e = document.getElementById(vid); if (e) e.textContent = document.getElementById(id).value; };
+  [
+    ['target','vTarget'],['lock','vLock'],['springK','vK'],['share','vShare'],['springIters','vIters'],
+    ['maxStep','vMax'],['tol','vTol'],['minRun','vMinRun'],['turnDeg','vTurn'],['turnPow','vPow'],
+    ['endPad','vPad'],['overlapBoost','vOv'],['eqAmt','vEq'],['smoothAmt','vSm'],['pocket','vPk'],
+    ['preserve','vPr'],['areaMix','vAr'],['antiPinch','vAp'],['minAngle','vMa'],['cAngle','vCa'],
+    ['splT','vSt'],['cSpeed','vSp'],['splineTen','vSpt'],['splineStep','vSps']
+  ].forEach(function(p){ set(p[0], p[1]); });
+}
+window.syncSeamLabels = syncSeamLabels;
+
+function styleRing(src){
+  if (window.CompressorStack && window.CompressorStack.runFromParams) {
+    try {
+      const raw = localStorage.getItem('compressor_stack_v5') || localStorage.getItem('compressor_stack_v3');
+      const st = raw ? JSON.parse(raw) : null;
+      return window.CompressorStack.runFromParams(src, st);
+    } catch (e) {}
+    return window.CompressorStack.runFromParams(src);
+  }
+  return C.macroSmooth(src, 10, 1, 16, 80);
+}
+
+let WORLD = null;
+function buildWorld(){
+  const list = (window.REAL_DISTRICTS || []).map(function(d){
+    const styled = styleRing(d.pts);
+    return { name: d.name, src: d.pts, styled: styled };
+  });
+  WORLD = S.worldFromDistricts(list);
+}
+
+function fit(rings, cw, ch, pad){
+  let minx=1e9,miny=1e9,maxx=-1e9,maxy=-1e9;
+  rings.forEach(function(r){ r.forEach(function(p){
+    minx=Math.min(minx,p[0]); miny=Math.min(miny,p[1]); maxx=Math.max(maxx,p[0]); maxy=Math.max(maxy,p[1]);
+  }); });
+  const w=Math.max(1e-3,maxx-minx), h=Math.max(1e-3,maxy-miny);
+  const s=Math.min((cw-2*pad)/w,(ch-2*pad)/h);
+  return {s, ox: pad+(cw-2*pad-w*s)/2-minx*s, oy: pad+(ch-2*pad-h*s)/2-miny*s};
+}
+function drawPoly(ctx, ring, t, fill, stroke){
+  ctx.beginPath();
+  ring.forEach(function(p,i){ const x=t.ox+p[0]*t.s, y=t.oy+p[1]*t.s; i?ctx.lineTo(x,y):ctx.moveTo(x,y); });
+  ctx.closePath();
+  if (fill) { ctx.fillStyle=fill; ctx.fill(); }
+  ctx.strokeStyle=stroke; ctx.lineWidth=1.6; ctx.stroke();
+}
+function pairStats(A, B){
+  const fa = S.facingMask(A, B, 28);
+  let n=0,s=0,mn=1e9,mx=-1e9,lock=0;
+  for (let i=0;i<A.length;i++){
+    if (!fa[i]) continue;
+    const g = S.signedGap(A[i], B);
+    n++; s+=g; if (g<mn) mn=g; if (g>mx) mx=g;
+    if (Math.abs(g-5)<=0.4) lock++;
+  }
+  return { n:n, mean:n?s/n:0, min:n?mn:0, max:n?mx:0, lock:lock };
+}
+function drawPair(cv, A, B, node){
+  const ctx=cv.getContext('2d'); ctx.clearRect(0,0,cv.width,cv.height);
+  const t=fit([A.live,B.live], cv.width, cv.height, 16);
+  drawPoly(ctx, A.live, t, 'rgba(79,176,224,.22)', PAL[0]);
+  drawPoly(ctx, B.live, t, 'rgba(232,162,58,.22)', PAL[1]);
+  const fa = S.facingMask(A.live, B.live, 28);
+  for (let i=0;i<A.live.length;i++){
+    if (!fa[i]) continue;
+    const h=S.closestOnRing(A.live[i], B.live);
+    const g=S.signedGap(A.live[i], B.live);
+    const col = Math.abs(g-5)<=0.4 ? '#6ee7b7' : (g<5 ? '#ff7a7a' : '#4da3ff');
+    ctx.strokeStyle=col; ctx.lineWidth=1;
+    ctx.beginPath();
+    ctx.moveTo(t.ox+A.live[i][0]*t.s, t.oy+A.live[i][1]*t.s);
+    ctx.lineTo(t.ox+h.q[0]*t.s, t.oy+h.q[1]*t.s);
+    ctx.stroke();
+  }
+  if (node) {
+    ctx.fillStyle='#fff';
+    ctx.beginPath(); ctx.arc(t.ox+node[0]*t.s, t.oy+node[1]*t.s, 3, 0, Math.PI*2); ctx.fill();
+  }
+}
+
+function renderSeams(){
+  syncSeamLabels();
+  if (!WORLD) return;
+  if (window.SeamStack) window.SeamStack.run(WORLD);
+  const m = WORLD.metrics || {};
+  const el = document.getElementById('metrics');
+  if (el) el.textContent = 'пар ' + WORLD.pairs.length + ' · тройников ' + WORLD.triples.length +
+    ' · точек шва ' + (m.n||0) + ' · зазор mean ' + (m.mean||0).toFixed(2) +
+    '  min ' + (m.min||0).toFixed(2) + '  max ' + (m.max||0).toFixed(2) +
+    ' · в замке ' + (m.locked||0) + '  ближе ' + (m.under||0) + '  дальше ' + (m.over||0);
+  const live = document.getElementById('liveParams');
+  if (live) live.innerHTML = '<span class="hint">копировать</span>' + (window.SeamStack ? window.SeamStack.liveLine() : '');
+  const host = document.getElementById('pairCards');
+  host.innerHTML = '';
+  WORLD.pairs.forEach(function(p){
+    const A = WORLD.districts[p.a], B = WORLD.districts[p.b];
+    const st = pairStats(A.live, B.live);
+    const card = document.createElement('div');
+    card.className = 'bcard' + (Math.abs(st.mean-5)>1 ? ' hot' : '');
+    const cv = document.createElement('canvas'); cv.width=260; cv.height=180; cv.className='bcanvas';
+    const lab = document.createElement('div'); lab.className='blabel';
+    lab.textContent = '#' + (p.a+1) + ' ' + A.name.replace(' район','') + '  ·  #' + (p.b+1) + ' ' + B.name.replace(' район','');
+    const met = document.createElement('div'); met.className='bmet';
+    met.textContent = 'mean ' + st.mean.toFixed(2) + '  min ' + st.min.toFixed(2) + '  max ' + st.max.toFixed(2) +
+      '  lock ' + st.lock + '/' + st.n;
+    card.appendChild(cv); card.appendChild(lab); card.appendChild(met);
+    host.appendChild(card);
+    drawPair(cv, A, B);
+  });
+  const th = document.getElementById('tripCards');
+  th.innerHTML = '';
+  WORLD.triples.forEach(function(tr){
+    const ds = [WORLD.districts[tr.a], WORLD.districts[tr.b], WORLD.districts[tr.c]];
+    const card = document.createElement('div'); card.className='bcard';
+    const cv = document.createElement('canvas'); cv.width=260; cv.height=180; cv.className='bcanvas';
+    const ctx=cv.getContext('2d');
+    const t=fit(ds.map(function(d){return d.live;}), 260, 180, 16);
+    ds.forEach(function(d,i){ drawPoly(ctx, d.live, t, PAL[i]+'33', PAL[i]); });
+    ctx.fillStyle='#fff';
+    ctx.beginPath(); ctx.arc(t.ox+tr.node[0]*t.s, t.oy+tr.node[1]*t.s, 3.5, 0, Math.PI*2); ctx.fill();
+    const lab = document.createElement('div'); lab.className='blabel';
+    lab.textContent = '#' + (tr.a+1) + ' · #' + (tr.b+1) + ' · #' + (tr.c+1);
+    const met = document.createElement('div'); met.className='bmet';
+    met.textContent = 'узел (' + tr.node[0].toFixed(0) + ', ' + tr.node[1].toFixed(0) + ')  verts ' + tr.n;
+    card.appendChild(cv); card.appendChild(lab); card.appendChild(met);
+    th.appendChild(card);
+  });
+  if (!WORLD.triples.length) {
+    const p = document.createElement('p'); p.className='note'; p.textContent='тройников в этом окне соседства нет — подвинь «порог соседства».';
+    th.appendChild(p);
+  }
+}
+window.renderSeams = renderSeams;
+
+function copyLive(){
+  const txt = JSON.stringify({ stack: window.SeamStack && window.SeamStack.STACK, metrics: WORLD && WORLD.metrics }, null, 0);
+  if (navigator.clipboard) navigator.clipboard.writeText(txt).catch(function(){});
+}
+document.getElementById('copyState').addEventListener('click', copyLive);
+document.getElementById('liveParams').addEventListener('click', copyLive);
+document.getElementById('resetStart').addEventListener('click', function(){
+  if (window.SeamStack) window.SeamStack.resetParams();
+  renderSeams();
+});
+
+buildWorld();
+renderSeams();
+</script>
+</body>
+</html>

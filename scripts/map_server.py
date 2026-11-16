@@ -8,7 +8,7 @@ import sys
 import traceback
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlparse, unquote
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -112,7 +112,7 @@ class Handler(SimpleHTTPRequestHandler):
         if not parts:
             self._json(200, {"maps": pub.list_maps()})
             return True
-        mid = parts[0]
+        mid = unquote(parts[0])
         try:
             geom = pub.filter_zones(pub.load_geometry(mid, ver), ids)
         except FileNotFoundError as e:
@@ -133,6 +133,9 @@ class Handler(SimpleHTTPRequestHandler):
                     "theme_default": "atlas-plain",
                 },
             )
+            return True
+        if parts[1] == "outline":
+            self._json(200, pub.outline_from_geom(geom))
             return True
         if parts[1] == "geometry":
             self._json(200, geom)
@@ -298,13 +301,23 @@ class Handler(SimpleHTTPRequestHandler):
                     return
                 self._json(400, {"error": "нужен action login/register/logout"})
                 return
+            if u.path == "/api/pen-log":
+                body = self._read_json()
+                logp = ROOT / "prototype" / "pen-session.jsonl"
+                logp.parent.mkdir(parents=True, exist_ok=True)
+                with logp.open("a", encoding="utf-8") as f:
+                    f.write(json.dumps(body, ensure_ascii=False) + "\n")
+                n = sum(1 for _ in logp.open(encoding="utf-8"))
+                self._json(200, {"ok": True, "n": n})
+                return
             if u.path.startswith("/v1/maps/") and u.path.rstrip("/").endswith("/publish"):
                 user = self._need_user()
                 if not user:
                     return
-                mid = u.path[len("/v1/maps/") :].split("/")[0]
+                mid = unquote(u.path[len("/v1/maps/") :].split("/")[0])
                 body = self._read_json()
                 slug = (body.get("slug") or mid).strip()
+                copy_name = (body.get("name") or "").strip() or None
                 try:
                     bundle = cat.load_project_bundle(slug)
                 except FileNotFoundError:
@@ -319,10 +332,16 @@ class Handler(SimpleHTTPRequestHandler):
                         if meta_p.is_file()
                         else {"slug": slug, "name": mid}
                     )
+                    if copy_name:
+                        meta = dict(meta)
+                        meta["name"] = copy_name
                     snap = pub.publish(mid, svg, meta)
                     self._json(200, {"ok": True, "map": snap["id"], "version": snap["version"]})
                     return
-                snap = pub.publish(mid, bundle["svg"], bundle.get("map") or {"slug": slug})
+                meta = dict(bundle.get("map") or {"slug": slug})
+                if copy_name:
+                    meta["name"] = copy_name
+                snap = pub.publish(mid, bundle["svg"], meta)
                 self._json(200, {"ok": True, "map": snap["id"], "version": snap["version"]})
                 return
             if u.path != "/api/maps":

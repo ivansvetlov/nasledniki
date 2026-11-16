@@ -1,0 +1,971 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>compressor.js — демо-бенч</title>
+<link rel="stylesheet" href="theme.css?v=20260828s">
+<style>
+  :root { --gap: 16px; }
+  .sub { font-size: 13px; }
+
+  canvas { background: hsl(240 9% 6%); border-radius: 8px; display: block; }
+  .legend { color: var(--muted-foreground); font-size: 12px; margin-bottom: 8px; }
+  .legend span { display: inline-block; margin-right: 14px; }
+  .sw { display: inline-block; width: 12px; height: 12px; border-radius: 3px; vertical-align: middle; margin-right: 5px; }
+  .note { color: var(--muted-foreground); font-size: 12px; max-width: 520px; margin-top: 10px; }
+
+  .klab { display:flex; align-items:center; gap:6px; min-width:0; }
+  .klab label { flex:1 1 auto; min-width:0; }
+  .qhelp {
+    flex:0 0 auto; width:18px; height:18px; padding:0; border-radius:50%;
+    border:1px solid hsl(211 100% 50% / .4); background:hsl(211 100% 50% / .14);
+    color:var(--accent); font:700 11px/18px ui-sans-serif,sans-serif;
+    cursor:pointer; text-align:center;
+  }
+  .qhelp:hover, .qhelp[aria-expanded="true"] { background:hsl(211 100% 50% / .3); }
+
+  html, body { margin: 0; padding: 0; }
+  body.has-topnav .window {
+    max-width: none !important; margin: 0 !important; border: 0; border-radius: 0;
+    background: transparent; box-shadow: none;
+  }
+  body.has-topnav .content { padding: 0 !important; }
+  body.has-topnav { overflow: hidden; }
+
+  /* ---- раскладка: копибар сверху, сайдбар влево до края, сцена справа ---- */
+  .copybar {
+    flex: 0 0 auto; font: 11px/1.35 ui-monospace, monospace;
+    padding: 7px 14px; background: var(--card-2); border-bottom: 1px solid var(--border);
+    color: var(--foreground); cursor: pointer; white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis; user-select: none;
+  }
+  .copybar:hover { background: hsl(211 100% 50% / .10); color: var(--accent); }
+  .copybar .hint { color: var(--muted-foreground); margin-right: 8px; }
+  .layout { display: flex; gap: 0; align-items: stretch; margin: 0; min-height: calc(100vh - 78px); }
+  .sidebar {
+    width: min(640px, 48vw); flex: 0 0 auto;
+    position: sticky; top: 78px; height: calc(100vh - 78px); max-height: calc(100vh - 78px);
+    background: var(--card); border: 0; border-right: 1px solid var(--border);
+    border-radius: 0; padding: 0; box-shadow: none; overflow: hidden;
+    display: flex; flex-direction: column;
+  }
+  .side-split { display: flex; flex: 1; min-height: 0; min-width: 0; }
+  .param-dock {
+    flex: 0 0 280px; width: 280px; min-width: 0;
+    overflow: hidden; padding: 8px 8px 10px 10px;
+    border-right: 1px solid var(--border);
+    display: flex; flex-direction: column;
+    scrollbar-width: thin;
+    scrollbar-color: hsl(211 100% 50% / .45) hsl(240 8% 8%);
+  }
+  .param-dock .param-box {
+    flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden;
+  }
+  .param-dock::-webkit-scrollbar { width: 8px; }
+  .param-dock::-webkit-scrollbar-track {
+    background: hsl(240 8% 7%); border-radius: 99px; margin: 8px 0;
+  }
+  .param-dock::-webkit-scrollbar-thumb {
+    background: linear-gradient(180deg, hsl(211 100% 50% / .55), hsl(211 100% 40% / .35));
+    border-radius: 99px; border: 2px solid hsl(240 8% 7%);
+  }
+  .param-dock::-webkit-scrollbar-thumb:hover { background: hsl(211 100% 55% / .7); }
+  .param-box {
+    background: var(--card-2); border: 1px solid var(--border); border-radius: 10px;
+    padding: 8px 8px 10px; box-shadow: inset 0 1px 0 rgba(255,255,255,.04);
+  }
+  .param-head { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
+  .param-actions { display: flex; gap: 6px; }
+  .param-actions .btn { flex: 1; padding: 5px 8px; font-size: 12px; }
+  .anim-dock {
+    flex: 1 1 auto; min-width: 0; padding: 10px 12px 12px;
+    display: flex; flex-direction: column; gap: 8px; align-items: stretch;
+    background: linear-gradient(180deg, hsl(240 6% 11%), hsl(240 8% 7%));
+  }
+  .anim-dock h4 { margin: 0; font-size: 14px; font-weight: 600; }
+  .anim-dock .anim-val {
+    font: 600 12px/1.3 ui-monospace, monospace; color: var(--accent);
+  }
+  .anim-dock p { margin: 0; font-size: 12px; color: var(--muted-foreground); line-height: 1.4; }
+  .anim-dock svg {
+    display: block; width: min(100%, 280px); aspect-ratio: 1 / 1; height: auto;
+    flex: 0 0 auto; align-self: center; max-height: min(280px, 36vh);
+    background: hsl(240 9% 6%); border-radius: 10px; border: 1px solid var(--border);
+  }
+  .stack-head { font-size: 11px; color: var(--muted-foreground); text-transform: uppercase; letter-spacing: .04em; margin: 2px 0 6px; }
+  .stack-list {
+    display: flex; flex-direction: column; gap: 2px; margin: 0 0 6px;
+    flex: 1 1 auto; min-height: 72px; overflow-y: auto;
+    scrollbar-width: thin; scrollbar-color: hsl(211 100% 50% / .45) hsl(240 8% 8%);
+  }
+  .stack-row {
+    display: grid; grid-template-columns: 20px 1fr repeat(4, 20px); align-items: center; gap: 2px;
+    padding: 2px 4px; border: 1px solid var(--border); border-radius: 7px;
+    background: var(--card); font-size: 11px; cursor: pointer;
+  }
+  .stack-row.is-active {
+    background: hsl(211 100% 50% / .10); box-shadow: inset 2px 0 0 var(--accent);
+  }
+  .stack-row.off { opacity: .42; }
+  .stack-row .st-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .stack-row button {
+    width: 20px; height: 20px; padding: 0; border-radius: 6px; cursor: pointer;
+    border: 1px solid hsl(211 100% 50% / .35); background: hsl(211 100% 50% / .12);
+    color: var(--accent); font-size: 12px; line-height: 20px;
+  }
+  .stack-row button:hover { background: hsl(211 100% 50% / .28); }
+  .stack-add { display: flex; gap: 6px; margin: 0 0 8px; }
+  .stack-add .select { flex: 1; min-width: 0; }
+  .stack-add .btn { flex: 0 0 auto; padding: 5px 8px; font-size: 12px; }
+  .insp-empty { font-size: 12px; color: var(--muted-foreground); margin: 4px 0 8px; line-height: 1.35; }
+  #pluginKnobs { flex: 1 1 auto; min-height: 0; overflow-y: auto; margin-top: 4px;
+    scrollbar-width: thin; scrollbar-color: hsl(211 100% 50% / .45) hsl(240 8% 8%); }
+  #pluginKnobs .knob, #pluginKnobs .mode { display: none; }
+  #pluginKnobs .group { display: contents; }
+  #pluginKnobs .group > h3, #pluginKnobs .group > .ghint { display: none; }
+  .param-box .knob, .param-box .mode { display: none; }
+  .param-box .group { display: contents; }
+  .param-box .group > h3, .param-box .group > .ghint { display: none; }
+  .knob.is-active, .mode.is-active {
+    background: hsl(211 100% 50% / .10); border-radius: 8px; margin: 0 -4px; padding-left: 4px; padding-right: 4px;
+    box-shadow: inset 2px 0 0 var(--accent);
+  }
+  .stage { flex: 1 1 auto; min-width: 0; padding: 16px 20px 24px; overflow-y: auto; max-height: calc(100vh - 78px);
+    scrollbar-width: thin; scrollbar-color: hsl(211 100% 50% / .4) hsl(240 8% 8%); }
+  .stage::-webkit-scrollbar { width: 8px; }
+  .stage::-webkit-scrollbar-thumb { background: hsl(211 100% 50% / .4); border-radius: 99px; }
+  .group { margin-top: 12px; }
+  .group > h3 { margin: 0 0 2px; font-size: 11px; color: var(--muted-foreground);
+    text-transform: uppercase; letter-spacing: .04em; }
+  .group > .ghint { font-size: 11px; color: var(--muted-foreground); margin: 0 0 4px; }
+
+  /* ---- стартовое состояние ---- */
+  .startbar { display: flex; flex-direction: column; align-items: stretch; gap: 8px;
+    background: var(--card-2); border: 1px solid var(--border); border-radius: 10px;
+    padding: 10px 12px; box-shadow: var(--shadow-sm); }
+  .badge { background: hsl(211 100% 50% / .16); color: var(--accent); border: 1px solid hsl(211 100% 50% / .4);
+    border-radius: 999px; padding: 3px 11px; font-size: 12px; font-weight: 600; white-space: nowrap; align-self: flex-start; }
+  .startlabel { color: var(--muted-foreground); font-size: 12px; }
+  .startvals { font: 12px/1.3 ui-monospace, monospace; color: var(--foreground); background: var(--card);
+    border: 1px solid var(--border); border-radius: 6px; padding: 5px 9px; }
+  .startbar .btn { width: 100%; text-align: center; }
+
+  /* ---- режим кривой ---- */
+  .mode { margin-top: 10px; }
+  .param-head + .mode { margin-top: 0; }
+  .startvals { font-size: 10px; word-break: break-word; display: block; }
+  .mode label { display: block; font-size: 11px; color: var(--muted-foreground);
+    text-transform: uppercase; letter-spacing: .04em; margin-bottom: 4px; }
+  .mode .klab { margin-bottom: 4px; }
+  .mode .klab label { margin-bottom: 0; }
+  select.select { width: 100%; }
+
+  /* ---- ручки параметров ---- */
+  .knob { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 6px 12px;
+    padding: 9px 0; border-top: 1px solid var(--border); }
+  .knob:first-of-type { border-top: none; }
+  .knob label { color: var(--muted-foreground); font-size: 13px; }
+  .knob .kval { font: 600 15px/1 ui-monospace, monospace; color: var(--accent); text-align: right; font-variant-numeric: tabular-nums; }
+  .knob .kunit { color: var(--muted-foreground); font-size: 11px; }
+  .knob input[type=range] { grid-column: 1 / -1; width: 100%; }
+
+  .knob { padding: 5px 0; }
+  .stack-add, .param-head, .stack-head, .insp-empty { flex: 0 0 auto; }
+
+  /* ---- наблюдаемость ---- */
+  .observe { margin-top: 0; background: var(--card-2); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; }
+  .observe h3 { margin: 0 0 6px; font-size: 12px; color: var(--muted-foreground); text-transform: uppercase; letter-spacing: .03em; }
+  .srow { display: grid; grid-template-columns: 1fr auto; font: 12px/1.5 ui-monospace, monospace; color: var(--muted-foreground); }
+  .srow b { color: var(--foreground); font-weight: 600; }
+  .srow.ch b { color: var(--accent); }
+  .srow.ch::after { content: " Δ от старта"; color: var(--accent); font-size: 10px; }
+  .smetrics { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border);
+    font: 12px/1.5 ui-monospace, monospace; color: var(--foreground); }
+
+  /* ---- карточки реальных районов ---- */
+  .cards { display: flex; gap: 14px; flex-wrap: wrap; }
+  .bcard { background: var(--card-2); border: 1px solid var(--border); border-radius: 8px; padding: 10px; width: 320px; }
+  .bcanvas { display: block; margin: 0 auto 6px; background: hsl(240 9% 6%); border-radius: 6px; }
+  .blabel { font-size: 13px; color: var(--foreground); margin-bottom: 2px; display:flex; align-items:center; gap:8px; }
+  .bn { flex:0 0 auto; background: hsl(211 100% 50% / .18); color: var(--accent); border: 1px solid hsl(211 100% 50% / .4);
+    border-radius: 999px; padding: 1px 8px; font: 600 12px/1.4 ui-monospace, monospace; }
+  .bptr { font: 11px/1.4 ui-monospace, monospace; color: hsl(211 100% 72%); min-height: 1.2em; margin: 0 0 4px; }
+  .bperim { font-size: 12px; color: hsl(211 100% 62%); margin: 4px 0 6px; font-variant-numeric: tabular-nums; }
+  .bcard button { width: 100%; padding: 6px; border: 1px solid var(--border); background: var(--card-2); color: var(--foreground); border-radius: 5px; cursor: pointer; }
+  .bcard button:hover { background: hsl(211 100% 50% / .14); }
+  .chkok { font-size: 12px; color: var(--muted-foreground); margin: 0 0 10px; }
+  .chkok label { display: inline; }
+</style>
+</head>
+<body>
+<div class="window">
+  <div class="content">
+    <div class="copybar" id="liveParams" title="клик — скопировать JSON стека">загрузка…</div>
+    <div class="layout">
+      <aside class="sidebar">
+        <div class="side-split">
+        <div class="param-dock" id="paramDock">
+        <div class="param-box">
+        <div class="param-head">
+          <div class="param-actions">
+            <button class="btn" id="resetStart">сброс</button>
+            <button class="btn" id="copyState">копировать</button>
+          </div>
+        </div>
+        <div class="stack-head">Стек обработки</div>
+        <div id="stackList" class="stack-list"></div>
+        <div class="stack-add">
+          <select id="stackAddType" class="select" aria-label="тип шага"></select>
+          <button class="btn" id="stackAdd">добавить</button>
+        </div>
+        </div>
+        </div>
+        <div class="anim-dock" id="animDock">
+          <h4 id="helpTitle">Параметр</h4>
+          <div class="anim-val" id="animVal">кликни ползунок или «?»</div>
+          <svg id="helpSvg" viewBox="0 0 240 240" preserveAspectRatio="xMidYMid meet" aria-hidden="true"></svg>
+          <p id="helpBody">Здесь крутится эффект выбранной ручки — и меняется, когда ты её двигаешь.</p>
+          <div id="pluginKnobs">
+        <p class="insp-empty" id="inspEmpty" style="display:none"></p>
+
+        <div class="mode">
+          <div class="klab">
+            <label for="curveMode">Режим кривой</label>
+            <button type="button" class="qhelp" data-help="curveMode" aria-label="Справка: режим кривой">?</button>
+          </div>
+          <select id="curveMode" class="select">
+            <option value="step" selected>Ступенчатый (прямые рёбра, скруглённые углы)</option>
+            <option value="spline">Гладкая (сплайн)</option>
+            <option value="cr">Catmull-Rom (истинный CR, докатка фасок)</option>
+          </select>
+        </div>
+
+        <div class="mode">
+          <div class="klab">
+            <label for="loopMode">Самопересечение границы (ТАБУ)</label>
+            <button type="button" class="qhelp" data-help="loopMode" aria-label="Справка: петля границы">?</button>
+          </div>
+          <select id="loopMode" class="select">
+            <option value="auto" selected>Auto — relax, иначе отсечь</option>
+            <option value="cut">Отсечь меньшую долю + сгладить</option>
+            <option value="relax">Расправить на месте</option>
+            <option value="off">Только детекция</option>
+          </select>
+        </div>
+
+        <div class="group">
+          <h3>Макро-сглаживание</h3>
+          <p class="ghint">рябь и общая форма области</p>
+          <div class="knob">
+            <div class="klab">
+              <label for="eps">eps — порог отсечения ряби</label>
+              <button type="button" class="qhelp" data-help="eps" aria-label="Справка: срез ряби">?</button>
+            </div>
+            <span class="kval"><span id="vEps">12</span><span class="kunit"> px</span></span>
+            <input id="eps" type="range" min="1" max="16" step="0.5" value="12">
+          </div>
+          <div class="knob">
+            <div class="klab">
+              <label for="ten">tension — натяжение сплайна</label>
+              <button type="button" class="qhelp" data-help="ten" aria-label="Справка: натяжение сплайна">?</button>
+            </div>
+            <span class="kval" id="vTen">0.6</span>
+            <input id="ten" type="range" min="0" max="1" step="0.05" value="0.6">
+          </div>
+          <div class="knob">
+            <div class="klab">
+              <label for="step">step — плотность вых. кривой</label>
+              <button type="button" class="qhelp" data-help="step" aria-label="Справка: шаг кривой">?</button>
+            </div>
+            <span class="kval"><span id="vStep">14</span><span class="kunit"> px</span></span>
+            <input id="step" type="range" min="1" max="16" step="1" value="8">
+          </div>
+          <div class="knob">
+            <div class="klab">
+              <label for="keepAngle">Защита выемок — угол</label>
+              <button type="button" class="qhelp" data-help="keepAngle" aria-label="Справка: защита выемок">?</button>
+            </div>
+            <span class="kval"><span id="vKeepAngle">45</span><span class="kunit">°</span></span>
+            <input id="keepAngle" type="range" min="20" max="80" step="1" value="45">
+          </div>
+          <div class="knob">
+            <div class="klab">
+              <label for="minAngle">Мин. угол района (ТАБУ острые)</label>
+              <button type="button" class="qhelp" data-help="minAngle" aria-label="Справка: запрет острых">?</button>
+            </div>
+            <span class="kval"><span id="vMinAngle">30</span><span class="kunit">°</span></span>
+            <input id="minAngle" type="range" min="10" max="60" step="5" value="30">
+          </div>
+          <div class="knob">
+            <div class="klab">
+              <label for="antiPinch">Анти-защемление — перешеек суши</label>
+              <button type="button" class="qhelp" data-help="antiPinch" aria-label="Справка: перешеек суши">?</button>
+            </div>
+            <span class="kval"><span id="vAntiPinch">10</span><span class="kunit"> px</span></span>
+            <input id="antiPinch" type="range" min="0" max="40" step="2" value="10">
+          </div>
+          <div class="knob">
+            <div class="klab">
+              <label for="antiPinchReach">Захват языка — шея→голова</label>
+              <button type="button" class="qhelp" data-help="antiPinchReach" aria-label="Справка: захват языка">?</button>
+            </div>
+            <span class="kval" id="vPinchReach">1</span>
+            <input id="antiPinchReach" type="range" min="0" max="1" step="0.05" value="1">
+          </div>
+          <div class="knob">
+            <div class="klab">
+              <label for="nubSpan">Сосок — макс. ширина</label>
+              <button type="button" class="qhelp" data-help="nubSpan" aria-label="Справка: соски">?</button>
+            </div>
+            <span class="kval"><span id="vNubSpan">10</span><span class="kunit"> px</span></span>
+            <input id="nubSpan" type="range" min="2" max="24" step="0.5" value="10">
+          </div>
+          <div class="knob">
+            <div class="klab">
+              <label for="nubDepth">Сосок — мин. высота</label>
+              <button type="button" class="qhelp" data-help="nubDepth" aria-label="Справка: высота соска">?</button>
+            </div>
+            <span class="kval"><span id="vNubDepth">0.15</span><span class="kunit"> px</span></span>
+            <input id="nubDepth" type="range" min="0.05" max="2" step="0.05" value="0.15">
+          </div>
+          <div class="knob">
+            <div class="klab">
+              <label for="nubTurn">Сосок — мин. поворот</label>
+              <button type="button" class="qhelp" data-help="nubTurn" aria-label="Справка: угол соска">?</button>
+            </div>
+            <span class="kval"><span id="vNubTurn">16</span><span class="kunit">°</span></span>
+            <input id="nubTurn" type="range" min="8" max="45" step="1" value="16">
+          </div>
+        </div>
+
+        <div class="group">
+          <h3>Параметризация · LFO/ADSR</h3>
+          <p class="ghint">доводка границы района ручками</p>
+          <div class="knob">
+            <div class="klab">
+              <label for="splT">Tension — натяжение/округлость</label>
+              <button type="button" class="qhelp" data-help="splT" aria-label="Справка: скругление угла">?</button>
+            </div>
+            <span class="kval" id="vSplT">0.6</span>
+            <input id="splT" type="range" min="0" max="1" step="0.05" value="0.6">
+          </div>
+          <div class="knob">
+            <div class="klab">
+              <label for="cSpeed">Speed — плотность семплов</label>
+              <button type="button" class="qhelp" data-help="cSpeed" aria-label="Справка: плотность дуги">?</button>
+            </div>
+            <span class="kval" id="vSpeed">5</span>
+            <input id="cSpeed" type="range" min="2" max="12" step="1" value="5">
+          </div>
+          <div class="knob">
+            <div class="klab">
+              <label for="cSkew">Skew — перекос фасок</label>
+              <button type="button" class="qhelp" data-help="cSkew" aria-label="Справка: перекос фаски">?</button>
+            </div>
+            <span class="kval" id="vSkew">0</span>
+            <input id="cSkew" type="range" min="-1" max="1" step="0.05" value="0">
+          </div>
+          <div class="knob">
+            <div class="klab">
+              <label for="cPulse">Pulse — асимметрия радиуса</label>
+              <button type="button" class="qhelp" data-help="cPulse" aria-label="Справка: разный радиус">?</button>
+            </div>
+            <span class="kval" id="vPulse">0.5</span>
+            <input id="cPulse" type="range" min="0" max="1" step="0.05" value="0.5">
+          </div>
+          <div class="knob">
+            <div class="klab">
+              <label for="cBias">Bias — наружный сдвиг</label>
+              <button type="button" class="qhelp" data-help="cBias" aria-label="Справка: вытолкнуть дугу">?</button>
+            </div>
+            <span class="kval"><span id="vBias">1.5</span><span class="kunit"> px</span></span>
+            <input id="cBias" type="range" min="-6" max="6" step="0.5" value="1.5">
+          </div>
+          <div class="knob">
+            <div class="klab">
+              <label for="cAngle">Angle — порог остроты угла</label>
+              <button type="button" class="qhelp" data-help="cAngle" aria-label="Справка: какие углы">?</button>
+            </div>
+            <span class="kval"><span id="vAngle">90</span><span class="kunit">°</span></span>
+            <input id="cAngle" type="range" min="30" max="150" step="1" value="90">
+          </div>
+          <div class="knob">
+            <div class="klab">
+              <label for="innerAngle">Inner — порог внутренних углов</label>
+              <button type="button" class="qhelp" data-help="innerAngle" aria-label="Справка: внутренние углы">?</button>
+            </div>
+            <span class="kval"><span id="vInner">50</span><span class="kunit">°</span></span>
+            <input id="innerAngle" type="range" min="0" max="120" step="1" value="50">
+          </div>
+          <div class="knob">
+            <div class="klab">
+              <label for="shrinkR">Сжатие r — отступ внутрь</label>
+              <button type="button" class="qhelp" data-help="shrinkR" aria-label="Справка: сжатие r">?</button>
+            </div>
+            <span class="kval"><span id="vShrinkR">4</span><span class="kunit"> px</span></span>
+            <input id="shrinkR" type="range" min="0" max="20" step="0.5" value="4">
+          </div>
+          <div class="knob">
+            <div class="klab">
+              <label for="splineTen">Плавность сплайна</label>
+              <button type="button" class="qhelp" data-help="splineTen" aria-label="Справка: плавность сплайна">?</button>
+            </div>
+            <span class="kval" id="vSplineTen">0.8</span>
+            <input id="splineTen" type="range" min="0" max="1" step="0.05" value="0.8">
+          </div>
+          <div class="knob">
+            <div class="klab">
+              <label for="splineStep">Шаг сплайна</label>
+              <button type="button" class="qhelp" data-help="splineStep" aria-label="Справка: шаг сплайна">?</button>
+            </div>
+            <span class="kval"><span id="vSplineStep">2</span><span class="kunit"> px</span></span>
+            <input id="splineStep" type="range" min="1" max="8" step="1" value="2">
+          </div>
+        </div>
+          </div>
+        </div>
+        </div>
+      </aside>
+
+      <main class="stage">
+        <div class="eyebrow">compressor.js</div>
+        <h1 class="title">Демо-бенч сглаживания</h1>
+        <p class="sub">Слева — стек шагов. Под картинкой — ручки выбранного шага. Справа — превью и районы.</p>
+        <details class="sec" open>
+          <summary><span class="sec-title">Макро-сглаживание</span><span class="sec-note">исходник → результат</span><span class="chev">▸</span></summary>
+          <div class="sec-body">
+            <div class="legend">
+              <span><i class="sw" style="background:#5b6772"></i>исходник</span>
+              <span><i class="sw" style="background:#4fb0e0"></i>после макросмуф</span>
+            </div>
+            <canvas id="macro" width="380" height="380"></canvas>
+            <p class="note" id="macroInfo"></p>
+            <p class="note">«eps» режет мелкую рябь (&lt; eps); «step» — плотность ВЫХОДНОЙ кривой: больше = сильнее сжатие (меньше точек, грубее). step 2–3 трассирует исходник; step 8–10 — настоящее сжатие. Режим кривой (слева): «Гладкая» — рекомендуемый (Безье-фаска + сплайн, без выбросов), «Catmull-Rom» — истинный CR (на вогнутых углах возможен лёгкий выброс, докатывается фаской), «Ступенчатый» — прямые рёбра со скруглёнными углами.</p>
+          </div>
+        </details>
+
+        <details class="sec" open>
+          <summary><span class="sec-title">Образец района</span><span class="sec-note">плитка района</span><span class="chev">▸</span></summary>
+          <div class="sec-body">
+            <div class="legend">
+              <span><i class="sw" style="background:#5b6772"></i>исходник (шум)</span>
+              <span><i class="sw" style="background:#4fb0e0"></i>аппроксимация</span>
+            </div>
+            <canvas id="district" width="380" height="380"></canvas>
+            <p class="note" id="districtInfo"></p>
+            <p class="note">Граница района сжимается в гладкую замкнутую кривую, доводится панелью ручек (метафора LFO/ADSR) слева. Крутите ручки — результат обновляется здесь, независимо от того, свёрнута секция или нет.</p>
+          </div>
+        </details>
+
+        <details class="sec" open>
+          <summary><span class="sec-title">Наблюдаемость</span><span class="sec-note">Δ от старта + метрики</span><span class="chev">▸</span></summary>
+          <div class="sec-body">
+            <div class="observe">
+              <h3>Состояние параметров</h3>
+              <div id="statePanel"></div>
+              <div class="smetrics" id="stateMetrics"></div>
+            </div>
+            <p class="note">«Bias» держит кривую в ориентирах исходной границы ±, чтобы сплайн не «съедал» выпуклые углы. «Старт 85%» — подобранное стартовое состояние (натяжение ≈0.85): от него удобно крутить дальше. Δ от старта подсвечивает изменённые ручки.</p>
+          </div>
+        </details>
+
+        <details class="sec" open>
+          <summary><span class="sec-title">Реальные районы (map.svg)</span><span class="sec-note">загрузка из карты</span><span class="chev">▸</span></summary>
+          <div class="sec-body">
+            <div class="legend">
+              <span><i class="sw" style="background:#5b6772"></i>исходник района (реальный)</span>
+              <span><i class="sw" style="background:#4fb0e0"></i>аппроксимация</span>
+              <span><i class="sw" style="background:#ff5cf0"></i>твоя разметка</span>
+            </div>
+            <div class="chkok">
+              <label style="display:inline;margin-right:12px"><input id="realGrid" type="checkbox" checked> сетка A1–F6</label>
+              <label style="display:inline;margin-right:12px"><input id="realAnnot" type="checkbox"> рисовать на районах</label>
+              <label style="display:inline;margin-right:12px"><input id="realErase" type="checkbox"> ластик</label>
+              <button id="realExport" class="btn" style="padding:3px 8px">копировать</button>
+              <button id="realDownload" class="btn" style="padding:3px 8px">скачать .json</button>
+              <label style="display:inline;margin-left:6px;color:var(--muted-foreground)">загрузить<input id="realUpload" type="file" accept="application/json" style="display:inline;width:auto;margin-left:4px"></label>
+              <span id="realSaved" style="margin-left:10px;color:hsl(211 100% 62%)"></span>
+            </div>
+            <div id="realCards" class="cards"></div>
+            <textarea id="realExportOut" readonly style="display:none;width:100%;height:64px;margin-top:8px;font:11px monospace"></textarea>
+            <p class="note">Клик по канвасу копирует указатель <code>#19 C3 (x, y)</code> — вставь в чат: «#19 C3 узкий перешеек». A1 = верхний-левый угол bbox района, F6 = нижний-правый. В режиме «рисовать» тот же клик с Shift тоже копирует указатель. Номер на карточке = порядок в map.svg (1…25).</p>
+          </div>
+        </details>
+
+        <div class="card" style="padding:14px 16px; margin-top: 18px;">
+          <div class="sec-head" style="margin-bottom:8px">
+            <h2>Устранение бухт</h2>
+            <span class="sec-note">выделено в отдельную страницу</span>
+          </div>
+          <p class="sub" style="margin-bottom:12px">Формы бухт (V-вырез, полукруглые стенки, вложенная, спиральная, глубокий носок, зубец, wrap-around) и резка границы между устьями — в отдельном бенче, чтобы не загораживать ручки и плитки районов.</p>
+          <a class="btn primary" href="bays.html">открыть устранение бухт →</a>
+        </div>
+      </main>
+    </div>
+  </div>
+</div>
+
+<script>window.module = window.module || { exports: {} };</script>
+<script src="../node_modules/js-clipper/clipper.js"></script>
+<script src="districts_real.js?v=20260828h"></script>
+<script src="corners.js?v=20260829z"></script>
+<script src="compressor.js?v=20260829h"></script>
+<script src="nav.js?v=20260829s"></script>
+<script src="stack-ui.js?v=20260829j"></script>
+<script>
+const C = window.Compressor;
+const Cn = window.Corners;
+
+// ---- стартовое состояние (≈85%): натяжение сильное, но устойчивое ----
+const START = { eps:10, ten:1, step:16, keepAngle:80, minAngle:10, antiPinch:20, antiPinchReach:0.55, nubSpan:10, nubDepth:0.15, nubTurn:16, splT:1, cSpeed:4, cSkew:1, cPulse:0, cBias:-6, cAngle:30, innerAngle:0, shrinkR:2.5, splineTen:0.7, splineStep:5 };
+const PARAM_IDS = ['eps','ten','step','keepAngle','minAngle','antiPinch','antiPinchReach','nubSpan','nubDepth','nubTurn','splT','cSpeed','cSkew','cPulse','cBias','cAngle','innerAngle','shrinkR','splineTen','splineStep'];
+let curveMode = 'step';     // 'spline' = гладкая (Безье-фаска+сплайн, без выбросов), 'cr' = Catmull-Rom, 'step' = фасетки
+let loopMode = 'auto';     // 'off' | 'relax' | 'cut' | 'auto' — обработка самопересечения границы
+
+// ---- панель LFO-ручек: читаем все ползунки, применяем к кольцу ----
+function lfo(){
+  return {
+    splT:  +document.getElementById('splT').value,
+    speed: +document.getElementById('cSpeed').value,
+    skew:  +document.getElementById('cSkew').value,
+    pulse: +document.getElementById('cPulse').value,
+    bias:  +document.getElementById('cBias').value,
+    angle: +document.getElementById('cAngle').value,
+  };
+}
+function ka(){ return +document.getElementById('keepAngle').value; }   // защита выемок (turn angle)
+function minAngleVal(){ return +document.getElementById('minAngle').value; }   // мин. внутренний угол (ТАБУ острые)
+function antiPinchVal(){ return +document.getElementById('antiPinch').value; }  // порог зазора, 0 = выкл
+function pinchReachVal(){ return +document.getElementById('antiPinchReach').value; }  // 0 шея … 1 голова
+function minClearance(ring, win){
+  win = win == null ? 4 : win;
+  const n = ring.length; let m = Infinity;
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      const along = Math.min(j - i, n - (j - i));
+      if (along <= win) continue;
+      const d = Math.hypot(ring[j][0] - ring[i][0], ring[j][1] - ring[i][1]);
+      if (d < m) m = d;
+    }
+  }
+  return m;
+}
+window.minClearance = minClearance;
+function processRing(ring){
+  if (window.CompressorStack && window.CompressorStack.run) return window.CompressorStack.run(ring);
+  const o = lfo();
+  const s = Math.max(2, o.speed|0);
+  let out = C.macroSmooth(ring, +document.getElementById('eps').value, +document.getElementById('ten').value, +document.getElementById('step').value, ka());
+  out = Cn.smoothCorners(out, {speed:o.speed, tension:o.splT, skew:o.skew, pulse:o.pulse, bias:o.bias, angle:o.angle, innerAngle:+document.getElementById('innerAngle').value});
+  if (curveMode === 'cr') out = C.catmullRomRing(out, o.splT, s);
+  else if (curveMode === 'spline') out = Cn.splineRing(out, o.splT, s);
+  else out = Cn.splineRing(out, 0, s);
+  out = Cn.smoothCorners(out, {speed:o.speed, tension:o.splT, skew:o.skew, pulse:o.pulse, bias:o.bias, angle:o.angle, innerAngle:+document.getElementById('innerAngle').value});
+  out = C.roundCorners(out, 2, 0.3);
+  out = Cn.fillConcavities(out, {depth:8, iters:8});
+  out = Cn.clampMinAngle(out, minAngleVal(), 20, {inner:true});
+  const gap = antiPinchVal();
+  if (gap > 0) out = Cn.unpinch(out, gap, {iters:5, strength:0.5, reach:pinchReachVal()});
+  const before = C.selfIntersections(out).length;
+  let after = before, fixed = 0;
+  if (loopMode !== 'off' && before) {
+    const u = C.untangleRing(out, loopMode, {relaxIters:12, relaxAmt:0.5, win:6, smoothWin:10});
+    out = u.ring; after = u.crossings; fixed = u.fixed;
+    out = Cn.clampMinAngle(out, minAngleVal(), 20, {inner:true});
+  }
+  window.__tangle = { before: before, after: after, fixed: fixed, mode: loopMode, gap: gap, clear: minClearance(out) };
+  return out;
+}
+function syncLabels(){
+  const set=(inp,out)=>{const e=document.getElementById(out); if(e) e.textContent=document.getElementById(inp).value;};
+  set('eps','vEps'); set('ten','vTen'); set('step','vStep'); set('keepAngle','vKeepAngle'); set('minAngle','vMinAngle');
+  set('antiPinch','vAntiPinch'); set('antiPinchReach','vPinchReach');
+  set('nubSpan','vNubSpan'); set('nubDepth','vNubDepth'); set('nubTurn','vNubTurn');
+  set('splT','vSplT'); set('cSpeed','vSpeed'); set('cSkew','vSkew'); set('cPulse','vPulse'); set('cBias','vBias'); set('cAngle','vAngle');
+  set('innerAngle','vInner'); set('shrinkR','vShrinkR'); set('splineTen','vSplineTen'); set('splineStep','vSplineStep');
+}
+window.syncLabels = syncLabels;
+
+function corners(r, deg){
+  deg = deg||25; let n=0; const L=r.length;
+  for(let i=0;i<L;i++){
+    const p=r[i],a=r[(i-1+L)%L],b=r[(i+1)%L];
+    const v1=[a[0]-p[0],a[1]-p[1]],v2=[b[0]-p[0],b[1]-p[1]];
+    const d1=Math.hypot(v1[0],v1[1]),d2=Math.hypot(v2[0],v2[1]);
+    if(d1<1e-6||d2<1e-6)continue;
+    let cos=(v1[0]*v2[0]+v1[1]*v2[1])/(d1*d2); cos=Math.max(-1,Math.min(1,cos));
+    if(Math.abs(180-Math.acos(cos)*180/Math.PI)>deg)n++;
+  }
+  return n;
+}
+function perimeter(r){let s=0;for(let i=0;i<r.length;i++){const a=r[i],b=r[(i+1)%r.length];s+=Math.hypot(b[0]-a[0],b[1]-a[1]);}return s;}
+function drawRing(ctx,ring,color,t,close,width){
+  ctx.beginPath();
+  ring.forEach((p,i)=>{const x=t.ox+p[0]*t.s,y=t.oy+p[1]*t.s;i?ctx.lineTo(x,y):ctx.moveTo(x,y);});
+  if(close!==false)ctx.closePath();
+  ctx.strokeStyle=color; ctx.lineWidth=width||2; ctx.stroke();
+}
+function fit(ring,cw,ch,pad){
+  let minx=1e9,miny=1e9,maxx=-1e9,maxy=-1e9;
+  ring.forEach(p=>{minx=Math.min(minx,p[0]);miny=Math.min(miny,p[1]);maxx=Math.max(maxx,p[0]);maxy=Math.max(maxy,p[1]);});
+  const w=Math.max(1e-3,maxx-minx),h=Math.max(1e-3,maxy-miny);
+  const s=Math.min((cw-2*pad)/w,(ch-2*pad)/h);
+  return {s,ox:pad+(cw-2*pad-w*s)/2-minx*s, oy:pad+(ch-2*pad-h*s)/2-miny*s};
+}
+
+/* ---- макро-сглаживание ---- */
+function wavyRing(){
+  const r=[]; for(let i=0;i<120;i++){
+    const t=i/120*Math.PI*2;
+    const rad=60+12*Math.sin(5*t)+2*Math.sin(40*t);
+    r.push([100+rad*Math.cos(t),100+rad*Math.sin(t)]);
+  } return r;
+}
+function districtRing(){
+  const ctrl=[]; const N=14;
+  for(let i=0;i<N;i++){
+    const a=i/N*Math.PI*2; let r=80+18*Math.sin(3*a)+10*Math.cos(2*a);
+    if(i===6) r-=26; // бухта (вдавленность)
+    ctrl.push([200+Math.cos(a)*r*1.25, 200+Math.sin(a)*r]);
+  }
+  const out=[]; const n=ctrl.length;
+  for(let i=0;i<n;i++){
+    const a=ctrl[i],b=ctrl[(i+1)%n]; const seg=Math.hypot(b[0]-a[0],b[1]-a[1]);
+    const steps=Math.max(2,Math.round(seg/2));
+    for(let s=0;s<steps;s++){ const t=s/steps;
+      out.push([a[0]+(b[0]-a[0])*t+(Math.random()-0.5)*5, a[1]+(b[1]-a[1])*t+(Math.random()-0.5)*5]);
+    }
+  }
+  return out;
+}
+const macro=document.getElementById('macro').getContext('2d');
+function renderMacro(){
+  syncLabels();
+  macro.clearRect(0,0,380,380);
+  const src=wavyRing();
+  drawRing(macro,src,'#5b6772',{s:1.5,ox:20,oy:20});
+  const out=processRing(src);
+  drawRing(macro,out,'#4fb0e0',{s:1.5,ox:20,oy:20});
+  const tg=window.__tangle||{before:0,after:0,fixed:0,mode:loopMode};
+  document.getElementById('macroInfo').textContent=
+    'углов до '+corners(src)+' → после '+corners(out)+' ('+(curveMode==='cr'?'Catmull-Rom':(curveMode==='spline'?'гладкая':'фасетки'))+', кривая сглажена)'+
+    (tg.before? ' · самопересечений '+tg.before+'→'+tg.after+' (исправлено '+tg.fixed+', '+tg.mode+')':' · самопересечений нет');
+}
+const district=document.getElementById('district').getContext('2d');
+function renderDistrict(){
+  syncLabels();
+  district.clearRect(0,0,380,380);
+  const src=districtRing();
+  drawRing(district,src,'rgba(120,140,155,0.45)',{s:1.5,ox:20,oy:20});
+  let sm=processRing(src);
+  drawRing(district,sm,'#4fb0e0',{s:1.5,ox:20,oy:20},true,2.5);
+  let maxD=0; for(const p of src){ let d=Infinity; for(let i=0;i+1<sm.length;i++){ const dd=C.dist2seg(p,sm[i],sm[i+1]); if(dd<d)d=dd; } if(d>maxD)maxD=d; }
+  const tg=window.__tangle||{before:0,after:0,fixed:0,mode:loopMode};
+  document.getElementById('districtInfo').textContent=
+    'вход '+src.length+' точек → аппрокс. '+sm.length+' точек · max отклонение '+maxD.toFixed(1)+'px · углов(>25°) '+corners(sm)+
+    (tg.before? ' · самопересечений '+tg.before+'→'+tg.after+' ('+tg.mode+')':' · самопересечений нет');
+}
+
+/* ---- реальные районы из map.svg (+ разметка от пользователя) ---- */
+const REAL = [];
+function realAnnotOn(){ const el=document.getElementById('realAnnot'); return el && el.checked; }
+function realEraseOn(){ const el=document.getElementById('realErase'); return el && el.checked; }
+function realGridOn(){ const el=document.getElementById('realGrid'); return el && el.checked; }
+function canvasPtOf(cv,e){ const rc=cv.getBoundingClientRect(); return [ (e.clientX-rc.left)*(cv.width/rc.width), (e.clientY-rc.top)*(cv.height/rc.height) ]; }
+function drawGrid(ctx, ring, t, hover, picked){
+  const n = C.GRID_N || 6;
+  const b = C.ringBBox(ring);
+  ctx.save();
+  ctx.strokeStyle = 'rgba(255,255,255,0.16)';
+  ctx.lineWidth = 1;
+  for (let i = 0; i <= n; i++) {
+    const x = b.minx + i / n * b.w, y = b.miny + i / n * b.h;
+    ctx.beginPath();
+    ctx.moveTo(t.ox + x * t.s, t.oy + b.miny * t.s);
+    ctx.lineTo(t.ox + x * t.s, t.oy + b.maxy * t.s);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(t.ox + b.minx * t.s, t.oy + y * t.s);
+    ctx.lineTo(t.ox + b.maxx * t.s, t.oy + y * t.s);
+    ctx.stroke();
+  }
+  function fillCell(cell, color){
+    if (!cell) return;
+    const r = C.cellRect(ring, cell.col, cell.row, n);
+    ctx.fillStyle = color;
+    ctx.fillRect(t.ox + r.x0 * t.s, t.oy + r.y0 * t.s, (r.x1 - r.x0) * t.s, (r.y1 - r.y0) * t.s);
+  }
+  fillCell(hover, 'rgba(255,255,255,0.06)');
+  fillCell(picked, 'rgba(79,176,224,0.22)');
+  ctx.fillStyle = 'rgba(200,210,220,0.75)';
+  ctx.font = '10px ui-monospace, monospace';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'bottom';
+  for (let c = 0; c < n; c++) {
+    const x = b.minx + (c + 0.5) / n * b.w;
+    ctx.fillText(String.fromCharCode(65 + c), t.ox + x * t.s, t.oy + b.miny * t.s - 2);
+  }
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'middle';
+  for (let r = 0; r < n; r++) {
+    const y = b.miny + (r + 0.5) / n * b.h;
+    ctx.fillText(String(r + 1), t.ox + b.minx * t.s - 4, t.oy + y * t.s);
+  }
+  ctx.restore();
+}
+function pointerText(r, cell, mp){
+  const xy = mp ? (' (' + mp[0].toFixed(1) + ', ' + mp[1].toFixed(1) + ')') : '';
+  return '#' + r.n + ' ' + (cell ? cell.id : '?') + xy + ' ' + r.name;
+}
+function setPointer(r, mp){
+  const cell = C.pointToCell(r.src, mp[0], mp[1]);
+  r._ptr = cell; r._ptrMap = mp;
+  const txt = pointerText(r, cell, mp);
+  if (r.ptr) r.ptr.textContent = txt;
+  if (navigator.clipboard) navigator.clipboard.writeText(txt).catch(function(){});
+  const el = document.getElementById('realSaved');
+  if (el) el.textContent = 'указатель скопирован: ' + txt;
+  window.__ptr = { n: r.n, name: r.name, cell: cell.id, map: mp, text: txt };
+  drawOne(r);
+}
+function segDistPt(p,a,b){ const vx=b[0]-a[0],vy=b[1]-a[1],wx=p[0]-a[0],wy=p[1]-a[1];
+  const c1=vx*wx+vy*wy,c2=vx*vx+vy*vy,t=c2===0?0:Math.max(0,Math.min(1,c1/c2));
+  const dx=p[0]-(a[0]+t*vx),dy=p[1]-(a[1]+t*vy); return Math.hypot(dx,dy); }
+function setupRealCards(){
+  const host = document.getElementById('realCards'); if(!host || !window.REAL_DISTRICTS) return;
+  window.REAL_DISTRICTS.forEach(function(d, i){
+    const n = i + 1;
+    const card=document.createElement('div'); card.className='bcard'; card.style.width='320px';
+    const cv=document.createElement('canvas'); cv.width=300; cv.height=300; cv.className='bcanvas';
+    const lab=document.createElement('div'); lab.className='blabel';
+    const bn=document.createElement('span'); bn.className='bn'; bn.textContent='#'+n;
+    const nm=document.createElement('span'); nm.textContent=d.name;
+    lab.appendChild(bn); lab.appendChild(nm);
+    const ptr=document.createElement('div'); ptr.className='bptr';
+    const inf=document.createElement('div'); inf.className='bperim';
+    card.appendChild(cv); card.appendChild(lab); card.appendChild(ptr); card.appendChild(inf);
+    host.appendChild(card);
+    const r={n:n, name:d.name, src:d.pts, ctx:cv.getContext('2d'), inf:inf, ptr:ptr, annots:[], _cv:cv, _cur:null, _draw:false};
+    REAL.push(r);
+    function pt2map(p){ const t=fit(r.src,300,300,22); return [ (p[0]-t.ox)/t.s, (p[1]-t.oy)/t.s ]; }
+    cv.addEventListener('mousedown', function(e){
+      const mp=pt2map(canvasPtOf(cv,e));
+      if(e.shiftKey || !realAnnotOn()){ setPointer(r, mp); return; }
+      if(realEraseOn()){ eraseReal(r, mp); return; }
+      r._draw=true; r._cur=[mp];
+    });
+    cv.addEventListener('mousemove', function(e){
+      const mp=pt2map(canvasPtOf(cv,e));
+      const cell=C.pointToCell(r.src, mp[0], mp[1]);
+      if(!r._hover || r._hover.id!==cell.id){ r._hover=cell; if(r.ptr && !r._ptr) r.ptr.textContent='клетка '+cell.id; drawOne(r); }
+      if(!r._draw) return;
+      r._cur.push(mp); drawOne(r);
+    });
+    cv.addEventListener('mouseup', function(){ if(!r._draw) return; r._draw=false; if(r._cur && r._cur.length>1) r.annots.push(r._cur); r._cur=null; drawOne(r); autosaveReal(); });
+    cv.addEventListener('mouseleave', function(){ r._hover=null; if(r.ptr) r.ptr.textContent=r._ptr?pointerText(r,r._ptr,r._ptrMap):''; drawOne(r); });
+  });
+  window.REAL = REAL;
+}
+function eraseReal(r, mp){
+  let best=-1, bestD=1e9;
+  for(let i=0;i<r.annots.length;i++){ const s=r.annots[i]; let prev=null;
+    for(let j=0;j<s.length;j++){ if(prev){ const dd=segDistPt(mp,prev,s[j]); if(dd<bestD){bestD=dd;best=i;} } prev=s[j]; } }
+  if(best>=0){ r.annots.splice(best,1); drawOne(r); autosaveReal(); }
+}
+function drawOne(r){
+  const ctx=r.ctx; ctx.clearRect(0,0,300,300);
+  const t=fit(r.src,300,300,22);
+  syncLabels();
+  drawRing(ctx,r.src,'rgba(120,140,155,0.5)',t,true,1.2);
+  let sm=processRing(r.src);
+  drawRing(ctx,sm,'#4fb0e0',t,true,2.2);
+  if (realGridOn()) drawGrid(ctx, r.src, t, r._hover, r._ptr);
+  function stroke(s){ ctx.beginPath(); s.forEach(function(p,i){ const x=t.ox+p[0]*t.s, y=t.oy+p[1]*t.s; i?ctx.lineTo(x,y):ctx.moveTo(x,y); }); ctx.strokeStyle='#ff5cf0'; ctx.lineWidth=2.5; ctx.lineJoin='round'; ctx.lineCap='round'; ctx.stroke(); }
+  r.annots.forEach(stroke);
+  if(r._cur) stroke(r._cur);
+  let maxD=0; for(let k=0;k<r.src.length;k++){ let p=r.src[k],d=Infinity; for(let i=0;i+1<sm.length;i++){ const dd=C.dist2seg(p,sm[i],sm[i+1]); if(dd<d)d=dd; } if(d>maxD)maxD=d; }
+  const tg=window.__tangle||{before:0,after:0,fixed:0,mode:loopMode};
+  r.inf.textContent='исх '+r.src.length+' → аппрокс '+sm.length+' · откл '+maxD.toFixed(1)+'px · угл '+corners(sm)+
+    ' · зазор '+(tg.clear!=null?tg.clear.toFixed(1):'?')+'px'+
+    (tg.before? ' · самопересечений '+tg.before+'→'+tg.after+' ('+tg.mode+')':' · самопересечений нет');
+}
+function renderReal(){ REAL.forEach(drawOne); }
+function collectAnnots(){ return REAL.map(function(r){return {name:r.name, annots:r.annots};}); }
+function markSaved(){
+  const el=document.getElementById('realSaved');
+  if(el) el.textContent='сохранено '+new Date().toLocaleTimeString();
+}
+function autosaveReal(){
+  try{ localStorage.setItem('real_annotations_v1', JSON.stringify(collectAnnots())); markSaved(); }catch(e){}
+}
+function exportReal(){
+  const ta=document.getElementById('realExportOut');
+  if(ta){ ta.style.display='block'; ta.value=JSON.stringify(collectAnnots()); ta.select();
+    if(navigator.clipboard){ navigator.clipboard.writeText(ta.value).catch(function(){}); } }
+}
+function downloadReal(){
+  const blob=new Blob([JSON.stringify(collectAnnots(),null,2)],{type:'application/json'});
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob);
+  a.download='real_annotations.json'; a.click(); URL.revokeObjectURL(a.href);
+  markSaved();
+}
+function uploadReal(file){
+  const rd=new FileReader();
+  rd.onload=function(){
+    try{
+      const data=JSON.parse(rd.result); const byName={};
+      data.forEach(function(d){ byName[d.name]=d.annots||[]; });
+      REAL.forEach(function(r){ if(byName[r.name]){ r.annots=byName[r.name]; drawOne(r); } });
+      autosaveReal();
+    }catch(e){ alert('Не удалось прочитать файл разметки: '+e.message); }
+  };
+  rd.readAsText(file);
+}
+function restoreAutosave(){
+  try{
+    const raw=localStorage.getItem('real_annotations_v1'); if(!raw) return;
+    const data=JSON.parse(raw); const byName={};
+    data.forEach(function(d){ byName[d.name]=d.annots||[]; });
+    REAL.forEach(function(r){ if(byName[r.name] && byName[r.name].length){ r.annots=byName[r.name]; drawOne(r); } });
+    markSaved();
+  }catch(e){}
+}
+
+/* ---- стартовое состояние + наблюдаемость ---- */
+function applyParams(p){
+  PARAM_IDS.forEach(k=>{ const el=document.getElementById(k); if(el && p[k]!==undefined) el.value=p[k]; });
+  syncLabels();
+}
+/* ---- автосохранение состояния (переживает перезагрузку) + журнал для агента ---- */
+const PARAMS_KEY='compressor_params_v1', JOURNAL_KEY='compressor_journal_v1', JOURNAL_CAP=50;
+function saveParamsState(){
+  try{
+    const st={ params: currentParams(), curveMode: curveMode, loopMode: loopMode, t: Date.now() };
+    localStorage.setItem(PARAMS_KEY, JSON.stringify(st));
+    // журнал: кольцевой буфер последних состояний (читается агентом через playwright)
+    let j=[]; try{ j=JSON.parse(localStorage.getItem(JOURNAL_KEY)||'[]'); }catch(e){}
+    j.push(st); if(j.length>JOURNAL_CAP) j=j.slice(j.length-JOURNAL_CAP);
+    localStorage.setItem(JOURNAL_KEY, JSON.stringify(j));
+    markSaved();
+  }catch(e){}
+}
+function restoreParamsState(){
+  try{
+    const raw=localStorage.getItem(PARAMS_KEY); if(!raw) return false;
+    const st=JSON.parse(raw);
+    if(st.params) applyParams(st.params);
+    if(st.curveMode){ const e=document.getElementById('curveMode'); if(e) e.value=st.curveMode; curveMode=st.curveMode; }
+    if(st.loopMode){ const e=document.getElementById('loopMode'); if(e) e.value=st.loopMode; loopMode=st.loopMode; }
+    return true;
+  }catch(e){ return false; }
+}
+  function renderAll(){ renderMacro(); renderDistrict(); renderReal(); updateObserve(); }
+  // тяжёлый рендер 25 карточек районов: дебаунс (не копим во время
+  // перетаскивания ползунка) + порционно по 4 за кадр, чтобы страница
+  // не замораживалась и карточки дорисовывались на глазах
+  var _realTimer = 0, _realChunk = 4;
+  function scheduleReal(){
+    clearTimeout(_realTimer);
+    _realTimer = setTimeout(function(){
+      var i = 0;
+      (function step(){
+        var end = Math.min(i + _realChunk, REAL.length);
+        for (; i < end; i++) drawOne(REAL[i]);
+        if (i < REAL.length) requestAnimationFrame(step); else updateObserve();
+      })();
+    }, 150);
+  }
+function liveSnapshot(){
+  const st = window.CompressorStack;
+  const o = { params: currentParams(), curveMode: curveMode, loopMode: loopMode };
+  if (st && st.liveJSON) Object.assign(o, st.liveJSON());
+  return o;
+}
+function updateObserve(){
+  const live=document.getElementById('liveParams');
+  if(live){
+    const line = (window.CompressorStack && window.CompressorStack.liveLine)
+      ? window.CompressorStack.liveLine()
+      : JSON.stringify(currentParams());
+    live.innerHTML='<span class="hint">копировать</span>'+line;
+  }
+  const sp=document.getElementById('statePanel');
+  if(sp){
+    let rows='';
+    PARAM_IDS.forEach(k=>{
+      const el=document.getElementById(k); const v=el?el.value:'';
+      const changed=(''+v)!==(''+START[k]);
+      rows+='<div class="srow'+(changed?' ch':'')+'"><span>'+k+'</span><b>'+v+(k==='eps'||k==='step'||k==='cBias'||k==='antiPinch'||k==='shrinkR'?' px':(k==='cAngle'||k==='keepAngle'||k==='minAngle'||k==='innerAngle'?'°':''))+'</b></div>';
+    });
+    sp.innerHTML=rows;
+  }
+  // метрики наблюдаемости
+  const m=document.getElementById('stateMetrics');
+  if(m){
+    const di=document.getElementById('districtInfo');
+    const mi=document.getElementById('macroInfo');
+    m.textContent=(di?di.textContent:'')+(mi?('  |  '+mi.textContent):'');
+    const sh=window.__shrink;
+    if(sh && sh.r>0){
+      const dlt = sh.area0 ? ((sh.area1/sh.area0-1)*100).toFixed(1) : '?';
+      m.textContent += '  |  сжатие '+sh.method+' r='+sh.r+'  S '+sh.area0.toFixed(0)+'→'+sh.area1.toFixed(0)+' ('+dlt+'%)';
+    }
+  }
+}
+function applyStart(){
+  applyParams(START);
+  if (window.CompressorStack && window.CompressorStack.resetParams) window.CompressorStack.resetParams(START);
+  renderMacro(); renderDistrict(); updateObserve();
+  scheduleReal();
+  if (window.ParamHelp) window.ParamHelp.refresh();
+}
+function currentParams(){
+  const o={}; PARAM_IDS.forEach(k=>{ const el=document.getElementById(k); if(el) o[k]=+el.value; }); return o;
+}
+
+/* ---- события ---- */
+const ALL_IDS=['eps','ten','step','keepAngle','minAngle','antiPinch','antiPinchReach','nubSpan','nubDepth','nubTurn','splT','cSpeed','cSkew','cPulse','cBias','cAngle','innerAngle','shrinkR','splineTen','splineStep'];
+ALL_IDS.forEach(id=>{ const el=document.getElementById(id); if(el) el.addEventListener('input',()=>{
+  syncLabels();
+  renderMacro(); renderDistrict(); scheduleReal(); updateObserve(); saveParamsState();
+  if (window.ParamHelp) window.ParamHelp.refresh();
+}); });
+document.getElementById('curveMode').addEventListener('change', e=>{
+  curveMode = e.target.value;
+  renderMacro(); renderDistrict(); scheduleReal(); updateObserve(); saveParamsState();
+  if (window.ParamHelp) window.ParamHelp.refresh();
+});
+document.getElementById('loopMode').addEventListener('change', e=>{
+  loopMode = e.target.value;
+  renderMacro(); renderDistrict(); scheduleReal(); updateObserve(); saveParamsState();
+  if (window.ParamHelp) window.ParamHelp.refresh();
+});
+const _gridEl=document.getElementById('realGrid');
+if(_gridEl) _gridEl.addEventListener('change', function(){ REAL.forEach(drawOne); });
+document.getElementById('resetStart').addEventListener('click', applyStart);
+function copyLive(){
+  const txt=JSON.stringify(liveSnapshot());
+  if(navigator.clipboard) navigator.clipboard.writeText(txt).catch(function(){});
+  const el=document.getElementById('realSaved'); if(el) el.textContent='состояние скопировано';
+  const live=document.getElementById('liveParams');
+  if(live){ live.style.color='var(--accent)'; setTimeout(function(){ live.style.color=''; }, 400); }
+}
+document.getElementById('copyState').addEventListener('click', copyLive);
+document.getElementById('liveParams').addEventListener('click', copyLive);
+document.getElementById('realExport').addEventListener('click', exportReal);
+document.getElementById('realDownload').addEventListener('click', downloadReal);
+document.getElementById('realUpload').addEventListener('change', function(e){ if(e.target.files && e.target.files[0]) uploadReal(e.target.files[0]); });
+
+setupRealCards();
+restoreAutosave();
+// состояние параметров переживает перезагрузку; нет сохранённого — старт ≈85%
+if(!restoreParamsState()){ applyStart(); }
+else {
+  if (window.CompressorStack && window.CompressorStack.loadIntoSliders) window.CompressorStack.loadIntoSliders();
+  renderMacro(); renderDistrict(); updateObserve(); scheduleReal();
+}
+</script>
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.13.0/dist/gsap.min.js"></script>
+<script src="param-help.js?v=20260829f"></script>
+</body>
+</html>

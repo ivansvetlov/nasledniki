@@ -1,6 +1,8 @@
 (function () {
-  var svg = document.querySelector("#stage svg:not(#ruler)");
+  var svg = document.querySelector("#stage svg:not(#ruler):not(#doodle):not(#pins)");
   var canvas = document.getElementById("draw");
+  var doodleSvg = document.getElementById("doodle");
+  var doodlePath = null;
   var viewport = document.getElementById("viewport");
   var stage = document.getElementById("stage");
   var layersEl = document.getElementById("layers");
@@ -23,6 +25,10 @@
   var MIN_FRAG = 12;
   var GAP_DEFAULT = 3;
   var gapPx = GAP_DEFAULT;
+  var SEAM_GAP = 5;
+  var SEAM_PULL = 6;
+  var SNAP_TOL = 16;
+  var MAGNET_R = 5;
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
 
@@ -60,11 +66,22 @@
   var pendingText = false;
   var textDrag = null;
   var selectedObj = null;
+  var seamPins = [];
+  var pinSeq = 0;
+  var pendingRibbon = null;
+  var ribbonDrag = null;
 
   function paths() {
     return Array.prototype.slice.call(
       svg.querySelectorAll("path[data-name]:not([data-kind])")
     );
+  }
+  function pathVisible(p) {
+    var g = p && p.parentNode;
+    var lid = g && g.getAttribute ? g.getAttribute("data-layer-id") : null;
+    if (!lid) return true;
+    var L = layerById(parseInt(lid, 10));
+    return L ? L.visible !== false : true;
   }
   function thickness() {
     var n = parseFloat(thickEl.value);
@@ -75,23 +92,20 @@
     return n < 1 ? n.toFixed(2).replace(/0+$/, "").replace(/\.$/, "") : String(n);
   }
   function strokeWidth() {
-    if (mode === "knife") return Math.max(1, gapPx);
     return thickness();
   }
   function inkAlphaMin() {
-    if (mode === "knife") return 90;
     return strokeWidth() < 1 ? 16 : 40;
   }
   function inkHits(ink, j) {
     return ink[j + 3] > inkAlphaMin();
   }
   function syncThickUi() {
-    var lock = mode === "knife";
-    if (thickEl) thickEl.disabled = lock;
+    if (thickEl) thickEl.disabled = false;
     var lab = thickEl && thickEl.closest ? thickEl.closest(".thick") : null;
-    if (lab) lab.classList.toggle("locked", lock);
+    if (lab) lab.classList.remove("locked");
     if (!thickVal) return;
-    thickVal.textContent = lock ? "щель " + gapPx : formatThick(thickness());
+    thickVal.textContent = formatThick(thickness());
   }
   thickEl.addEventListener("input", syncThickUi);
   syncThickUi();
@@ -103,7 +117,7 @@
     mode = m;
     canvas.style.pointerEvents =
       handMode || m !== "pick" ? "auto" : "none";
-    ["pick", "pen", "erase", "knife", "ruler", "marker"].forEach(function (id) {
+    ["pick", "pen", "ruler", "marker"].forEach(function (id) {
       var b = document.getElementById("btn-" + id);
       if (b) b.classList.toggle("on", mode === id);
     });
@@ -111,12 +125,7 @@
     viewport.classList.toggle("ruler", mode === "ruler");
     syncThickUi();
     if (hint) {
-      if (m === "knife")
-        hint.textContent =
-          "нож — рез толщиной щели карты (" + gapPx + " px), не кисть";
-      else if (m === "erase")
-        hint.textContent = "ластик — стереть в подложку, толщина кисти";
-      else if (m === "ruler")
+      if (m === "ruler")
         hint.textContent = magnetOn
           ? "клик — точка, веди мышь, второй клик — готово (магнит к кромке)"
           : "клик — точка, веди мышь, второй клик — готово";
@@ -129,6 +138,9 @@
       else if (m === "marker")
         hint.textContent =
           "маркер: нарисуй линию/контур поверх карты — она сохранится как подсказка";
+      else if (m === "pick")
+        hint.textContent =
+          "ПКМ — красная на границе; ЛКМ между двумя соседними — жёлтая; ПКМ по точке — удалить";
     }
   }
 
@@ -136,6 +148,7 @@
     stage.style.transform =
       "translate(" + pan.x + "px," + pan.y + "px) scale(" + pan.s + ")";
     if (ruler.a) renderRuler();
+    renderPins();
   }
   function fit() {
     var r = viewport.getBoundingClientRect();
@@ -158,7 +171,7 @@
       var cy = e.clientY - r.top;
       var old = pan.s;
       var next = old * (e.deltaY > 0 ? 0.92 : 1.08);
-      next = Math.max(0.12, Math.min(8, next));
+      next = Math.max(0.12, Math.min(32, next));
       pan.x = cx - (cx - pan.x) * (next / old);
       pan.y = cy - (cy - pan.y) * (next / old);
       pan.s = next;
@@ -220,6 +233,19 @@
         return;
       }
       if (e.button !== 0) return;
+      if (mode === "pick" && !handSticky && !space && !e.altKey) {
+        var rp = pos(e);
+        var hitPin = hitSeamPin(rp);
+        if (hitPin && hitPin.kind === "yellow") {
+          pendingTap = false;
+          pendingHand = false;
+          lastTap = 0;
+          beginRibbonFromPin(e, hitPin);
+          return;
+        }
+        var seam0 = pickSeamAt(rp);
+        if (seam0) pendingRibbon = { seam: seam0, x: rp.x, y: rp.y };
+      }
       var now = Date.now();
       var slop = e.pointerType === "touch" ? 44 : 32;
       if (
@@ -267,6 +293,19 @@
       startDragPan(e);
       return;
     }
+    if (ribbonDrag) {
+      e.preventDefault();
+      moveRibbon(e);
+      return;
+    }
+    if (pendingRibbon && press.maxd > 6 && mode === "pick" && !panning) {
+      pendingTap = false;
+      pendingHand = false;
+      lastTap = 0;
+      beginRibbonDrag(e, pendingRibbon.seam, pos(e), pendingRibbon);
+      pendingRibbon = null;
+      return;
+    }
     if (mode === "ruler" && ruler.live && !panning && !isChrome(e.target)) {
       ruler.b = snapPoint(e, ruler.a && ruler.a.id);
       renderRuler();
@@ -294,6 +333,13 @@
   function onViewportUp(e) {
     if (textDrag) textDrag = null;
     pendingHand = false;
+    if (ribbonDrag) {
+      endRibbon(e);
+      press.t = 0;
+      pendingRibbon = null;
+      return;
+    }
+    pendingRibbon = null;
     if (panning) {
       endPan(e);
       press.t = 0;
@@ -346,14 +392,6 @@
       e.preventDefault();
       setMode("pen");
     }
-    if (e.code === "KeyE") {
-      e.preventDefault();
-      setMode("erase");
-    }
-    if (e.code === "KeyK") {
-      e.preventDefault();
-      setMode("knife");
-    }
     if (e.code === "KeyR") {
       e.preventDefault();
       setMode("ruler");
@@ -381,6 +419,10 @@
       e.preventDefault();
       if (document.getElementById("ctx-menu")) {
         hideCtx();
+        return;
+      }
+      if (ribbonDrag) {
+        cancelRibbon();
         return;
       }
       if (ruler.a) {
@@ -439,8 +481,8 @@
           ? canMergeSelection()
             ? "ПКМ → объединить"
             : "разные слои — объединить нельзя"
-          : "карандаш отдаёт землю «" + short(target) + "», нож режет щель"
-        : "выберите район";
+          : "ПКМ — красная на границе; ЛКМ между двумя соседними — жёлтая; ПКМ по точке — удалить"
+        : "ПКМ — красная на границе; ЛКМ между двумя соседними — жёлтая; ПКМ по точке — удалить";
     fillZoneLayerSelect();
   }
 
@@ -1012,6 +1054,25 @@
       return;
     }
     if (isChrome(t)) return;
+    var pHit = pos(e);
+    var pinHit = hitSeamPin(pHit);
+    if (pinHit) {
+      removeSeamPin(pinHit);
+      renderPins();
+      if (hint)
+        hint.textContent =
+          pinHit.kind === "yellow" ? "жёлтая снята" : "якорь снят";
+      return;
+    }
+    var borderHit = nearestDistrictBorder(pHit, 12 / (pan.s || 1));
+    if (borderHit) {
+      addRedPin(borderHit);
+      renderPins();
+      if (hint)
+        hint.textContent =
+          "якорь · ещё одна красная по краю участка, ЛКМ между ними — жёлтая";
+      return;
+    }
     var hit = hitSvgAt(e);
     var kindEl =
       hit && hit.closest && hit.closest("text[data-kind],path[data-kind]");
@@ -1463,16 +1524,130 @@
   function snapshotStroke() {
     pushUndo({ type: "stroke", data: ctx.getImageData(0, 0, W, H) });
   }
+  function currentSnapshot() {
+    var snap = {};
+    paths().forEach(function (p) {
+      var g = p.parentNode;
+      var layer = g && g.getAttribute ? g.getAttribute("data-layer-id") : null;
+      snap[p.getAttribute("data-name")] = { tag: p.outerHTML, layer: layer };
+    });
+    return snap;
+  }
+  function currentOverlays() {
+    var o = {};
+    svg.querySelectorAll("[data-kind]").forEach(function (el) {
+      var k =
+        el.getAttribute("data-label") ||
+        el.getAttribute("data-kind") + "#" + (el.getAttribute("data-oid") || "");
+      o[k] = el.outerHTML;
+    });
+    return o;
+  }
+  function tagToEl(tag) {
+    try {
+      var doc = new DOMParser().parseFromString(
+        '<svg xmlns="http://www.w3.org/2000/svg">' + tag + "</svg>",
+        "image/svg+xml"
+      );
+      var el = doc.documentElement.firstElementChild;
+      return el && el.tagName ? el : null;
+    } catch (e) {
+      return null;
+    }
+  }
+  function upsertPath(name, rec) {
+    var old = null;
+    paths().forEach(function (p) {
+      if (p.getAttribute("data-name") === name) old = p;
+    });
+    if (!rec || !rec.tag) {
+      if (old && old.parentNode) old.parentNode.removeChild(old);
+      return;
+    }
+    var neu = tagToEl(rec.tag);
+    if (!neu) return;
+    if (old) old.replaceWith(neu);
+    else {
+      var g = rec.layer ? layerGroup(rec.layer) : null;
+      if (!g) g = stackEl() || svg;
+      g.appendChild(neu);
+    }
+    if (rec.layer) {
+      var g2 = layerGroup(rec.layer);
+      if (g2 && neu.parentNode !== g2) g2.appendChild(neu);
+    }
+    bindPathClick(neu);
+  }
+  function upsertOverlay(key, tag) {
+    var old = null;
+    svg.querySelectorAll("[data-kind]").forEach(function (el) {
+      var k =
+        el.getAttribute("data-label") ||
+        el.getAttribute("data-kind") + "#" + (el.getAttribute("data-oid") || "");
+      if (k === key) old = el;
+    });
+    if (!tag) {
+      if (old && old.parentNode) old.parentNode.removeChild(old);
+      return;
+    }
+    var neu = tagToEl(tag);
+    if (!neu) return;
+    if (old && old.parentNode) old.parentNode.replaceChild(neu, old);
+    else (stackEl() || svg).appendChild(neu);
+  }
+  function restoreSnapshot(snap) {
+    if (!snap) return;
+    var want = snap.paths || {};
+    var present = {};
+    Object.keys(want).forEach(function (n) {
+      present[n] = true;
+    });
+    paths().forEach(function (p) {
+      var n = p.getAttribute("data-name");
+      if (!present[n]) {
+        if (p.parentNode) p.parentNode.removeChild(p);
+      }
+    });
+    Object.keys(want).forEach(function (name) {
+      upsertPath(name, want[name]);
+    });
+    var curOv = {};
+    svg.querySelectorAll("[data-kind]").forEach(function (el) {
+      var k =
+        el.getAttribute("data-label") ||
+        el.getAttribute("data-kind") + "#" + (el.getAttribute("data-oid") || "");
+      curOv[k] = el;
+    });
+    var ovWant = snap.overlays || {};
+    Object.keys(curOv).forEach(function (k) {
+      if (!(k in ovWant) && curOv[k].parentNode)
+        curOv[k].parentNode.removeChild(curOv[k]);
+    });
+    Object.keys(ovWant).forEach(function (k) {
+      upsertOverlay(k, ovWant[k]);
+    });
+    if (snap.layers) {
+      layerList = JSON.parse(JSON.stringify(snap.layers));
+      activeLayerId = snap.activeLayerId;
+      if (snap.layerSeq) layerSeq = snap.layerSeq;
+    }
+    bindOverlayClicks();
+    applyLayerVisibility();
+    buildLayers();
+    buildLabels();
+  }
   function captureState(label, id) {
     return {
       type: "apply",
       id: id || 0,
       label: label || "действие",
-      html: stackEl().innerHTML,
-      labels: labels.slice(),
-      layers: JSON.parse(JSON.stringify(layerList)),
-      activeLayerId: activeLayerId,
-      layerSeq: layerSeq,
+      snap: {
+        paths: currentSnapshot(),
+        overlays: currentOverlays(),
+        layers: JSON.parse(JSON.stringify(layerList)),
+        activeLayerId: activeLayerId,
+        layerSeq: layerSeq,
+      },
     };
   }
   function regionsEl() {
@@ -1504,31 +1679,6 @@
     pushUndo(item);
     scheduleSave();
   }
-  function restoreDom(html, meta) {
-    stackEl().innerHTML = html;
-    if (meta && meta.layers) {
-      layerList = meta.layers;
-      activeLayerId = meta.activeLayerId;
-      if (meta.layerSeq) layerSeq = meta.layerSeq;
-    }
-    paths().forEach(bindPathClick);
-    bindOverlayClicks();
-    applyLayerVisibility();
-    buildLayers();
-  }
-  function restorePaths(map) {
-    paths().forEach(function (p) {
-      var n = p.getAttribute("data-name");
-      if (map[n] != null) p.setAttribute("d", map[n]);
-    });
-  }
-  function currentPaths() {
-    var snap = {};
-    paths().forEach(function (p) {
-      snap[p.getAttribute("data-name")] = p.getAttribute("d");
-    });
-    return snap;
-  }
   function undo(quiet) {
     dropTrailingStrokes();
     var last = undoStack.pop();
@@ -1541,12 +1691,17 @@
       ctx.putImageData(last.data, 0, 0);
     } else {
       redoStack.push(captureState(last.label, last.id));
-      restoreDom(last.html, last);
-      if (last.labels) labels = last.labels.slice();
+      restoreSnapshot(last.snap);
     }
     if (!quiet) {
       if (hint) hint.textContent = "отмена" + (last.label ? " · " + last.label : "");
       renderJournal();
+      penLog({
+        type: "undo",
+        label: last.label || last.type,
+        applied: false,
+        why: "undo",
+      });
     }
     scheduleSave();
     return true;
@@ -1562,8 +1717,7 @@
       ctx.putImageData(last.data, 0, 0);
     } else {
       undoStack.push(captureState(last.label, last.id));
-      restoreDom(last.html, last);
-      if (last.labels) labels = last.labels.slice();
+      restoreSnapshot(last.snap);
     }
     if (!quiet) {
       if (hint) hint.textContent = "повтор" + (last.label ? " · " + last.label : "");
@@ -1683,6 +1837,7 @@
     octx.imageSmoothingEnabled = false;
     for (var t = 0; t < labels.length; t++) labels[t] = 0;
     plist.forEach(function (p, i) {
+      if (!pathVisible(p)) return;
       octx.clearRect(0, 0, W, H);
       var path = new Path2D(p.getAttribute("d"));
       octx.fillStyle = "#fff";
@@ -1691,7 +1846,7 @@
         p.getAttribute("fill-rule") === "evenodd" ? "evenodd" : "nonzero"
       );
       var pix = octx.getImageData(0, 0, W, H).data;
-      var id = i + 1;
+      var id = parseInt(p.getAttribute("data-lid") || "0", 10) || i + 1;
       for (var t = 0; t < W * H; t++) {
         if (pix[t * 4 + 3] > 128) labels[t] = id;
       }
@@ -1907,10 +2062,16 @@
     });
   }
 
+  function clearDoodle() {
+    if (doodlePath && doodlePath.parentNode)
+      doodlePath.parentNode.removeChild(doodlePath);
+    doodlePath = null;
+  }
   function cancelDrawing() {
     if (!drawing) return;
     drawing = false;
     ctx.clearRect(0, 0, W, H);
+    clearDoodle();
     var last = undoStack[undoStack.length - 1];
     if (last && last.type === "stroke") undoStack.pop();
   }
@@ -1938,25 +2099,39 @@
     canvas.setPointerCapture(ev.pointerId);
     var p = pos(ev);
     strokePts = [{ x: p.x, y: p.y }];
-    ctx.beginPath();
-    ctx.moveTo(p.x, p.y);
-    ctx.strokeStyle = mode === "erase" ? "#c0392b" : "#111";
-    ctx.globalCompositeOperation = "source-over";
-    ctx.lineCap = "round";
-    ctx.lineJoin = "round";
-    ctx.lineWidth = strokeWidth();
-    ctx.lineTo(p.x + 0.15, p.y);
-    ctx.stroke();
+    if (mode === "pen" && doodleSvg) {
+      doodlePath = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      doodlePath.setAttribute("stroke-width", String(strokeWidth()));
+      doodlePath.setAttribute("d", "M" + p.x + "," + p.y);
+      doodleSvg.appendChild(doodlePath);
+    } else {
+      ctx.beginPath();
+      ctx.moveTo(p.x, p.y);
+      ctx.strokeStyle = "#111";
+      ctx.globalCompositeOperation = "source-over";
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      ctx.lineWidth = strokeWidth();
+      ctx.lineTo(p.x + 0.15, p.y);
+      ctx.stroke();
+    }
   });
   canvas.addEventListener("pointermove", function (ev) {
     if (ruler.live) return;
     if (!drawing) return;
     var p = pos(ev);
     strokePts.push({ x: p.x, y: p.y });
-    ctx.lineTo(p.x, p.y);
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.moveTo(p.x, p.y);
+    if (mode === "pen" && doodlePath) {
+      doodlePath.setAttribute(
+        "d",
+        doodlePath.getAttribute("d") + " L" + p.x + "," + p.y
+      );
+    } else {
+      ctx.lineTo(p.x, p.y);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(p.x, p.y);
+    }
   });
   function stopDraw(ev) {
     if (mode === "ruler") {
@@ -1973,7 +2148,9 @@
     }
     if (!drawing) return;
     drawing = false;
-    if (press.maxd < 18 && Date.now() - press.t < 500) {
+    clearDoodle();
+    var isPenStroke = mode === "pen" && target && strokePts.length >= 2;
+    if (press.maxd < 18 && Date.now() - press.t < 500 && !isPenStroke) {
       ctx.clearRect(0, 0, W, H);
       var last = undoStack[undoStack.length - 1];
       if (last && last.type === "stroke") undoStack.pop();
@@ -1997,12 +2174,6 @@
     } else if (mode === "marker") {
       if (!applyMarkerStroke())
         hint.textContent = "маркер: веди линию по карте";
-    } else if (mode === "knife") {
-      if (!target && L && L.type === "draw") applyOverlayErase();
-      else applyVoid("knife");
-    } else if (mode === "erase") {
-      if (!target && L && L.type === "draw") applyOverlayErase();
-      else applyVoid("erase");
     }
     ctx.clearRect(0, 0, W, H);
   }
@@ -2173,115 +2344,828 @@
     }
     return filled;
   }
+  function closestOnSeg(p, a, b) {
+    var vx = b[0] - a[0],
+      vy = b[1] - a[1];
+    var L2 = vx * vx + vy * vy;
+    var t = L2 ? ((p[0] - a[0]) * vx + (p[1] - a[1]) * vy) / L2 : 0;
+    t = Math.max(0, Math.min(1, t));
+    var qx = a[0] + t * vx,
+      qy = a[1] + t * vy;
+    return { x: qx, y: qy, t: t, d: Math.hypot(p[0] - qx, p[1] - qy) };
+  }
+  function segIntersect(a, b, c, d) {
+    var x1 = b[0] - a[0],
+      y1 = b[1] - a[1],
+      x2 = d[0] - c[0],
+      y2 = d[1] - c[1];
+    var denom = x1 * y2 - y1 * x2;
+    if (Math.abs(denom) > 1e-18) {
+      var t = ((c[0] - a[0]) * y2 - (c[1] - a[1]) * x2) / denom;
+      var u = ((c[0] - a[0]) * y1 - (c[1] - a[1]) * x1) / denom;
+      if (t >= 0 && t <= 1 && u >= 0 && u <= 1)
+        return [a[0] + t * x1, a[1] + t * y1];
+    }
+    return null;
+  }
+  function signedArea(ring) {
+    var a = 0;
+    for (var i = 0; i < ring.length; i++) {
+      var j = (i + 1) % ring.length;
+      a += ring[i][0] * ring[j][1] - ring[j][0] * ring[i][1];
+    }
+    return a / 2;
+  }
+  function pointInRing(p, ring) {
+    var inside = false;
+    for (var i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+      var xi = ring[i][0],
+        yi = ring[i][1],
+        xj = ring[j][0],
+        yj = ring[j][1];
+      if ((yi > p[1]) !== (yj > p[1]) && p[0] < ((xj - xi) * (p[1] - yi)) / (yj - yi) + xi)
+        inside = !inside;
+    }
+    return inside;
+  }
+  function lineSegRingIntersect(a, b, ring) {
+    var best = null,
+      bestD = 1e18;
+    for (var i = 0; i < ring.length; i++) {
+      var pt = segIntersect(a, b, ring[i], ring[(i + 1) % ring.length]);
+      if (pt) {
+        var dd = (pt[0] - a[0]) * (pt[0] - a[0]) + (pt[1] - a[1]) * (pt[1] - a[1]);
+        if (dd < bestD) {
+          bestD = dd;
+          best = pt;
+        }
+      }
+    }
+    return best;
+  }
+  function closestOnRingIdx(p, ring) {
+    var best = null,
+      bestD = 1e18;
+    for (var i = 0; i < ring.length; i++) {
+      var c = closestOnSeg(p, ring[i], ring[(i + 1) % ring.length]);
+      if (c.d < bestD) {
+        bestD = c.d;
+        best = { x: c.x, y: c.y, t: c.t, idx: i, d: c.d };
+      }
+    }
+    return best;
+  }
+  function closestOnAnyRing(p, rings) {
+    var best = null,
+      bestD = 1e18;
+    for (var n = 0; n < rings.length; n++) {
+      var c = closestOnRingIdx(p, rings[n]);
+      if (c && c.d < bestD) {
+        bestD = c.d;
+        best = c;
+      }
+    }
+    return best;
+  }
+  function removeLoops(pts) {
+    var out = pts.slice();
+    for (var i = 0; i + 1 < out.length; i++) {
+      for (var j = i + 2; j + 1 < out.length; j++) {
+        var pt = segIntersect(out[i], out[i + 1], out[j], out[j + 1]);
+        if (pt) {
+          out = out.slice(0, i + 1).concat([pt], out.slice(j + 1));
+          return removeLoops(out);
+        }
+      }
+    }
+    return out;
+  }
+  function hasSelfIntersection(ring) {
+    var n = ring.length;
+    for (var i = 0; i + 1 < n; i++) {
+      for (var j = i + 1; j + 1 < n; j++) {
+        if (j === i + 1) continue;
+        var a = ring[i],
+          b = ring[i + 1],
+          c = ring[j],
+          d = ring[j + 1];
+        if ((b[0] === c[0] && b[1] === c[1]) || (a[0] === d[0] && a[1] === d[1]))
+          continue;
+        if (segIntersect(a, b, c, d)) return true;
+      }
+    }
+    return false;
+  }
+  var PEN_ON = 0.51;
+  var PEN_FACE = 10;
+  function penLoc(p, ring) {
+    if (distToRing(p, ring) <= PEN_ON) return "on";
+    if (pointInRing(p, ring)) return "in";
+    return "out";
+  }
+  function penHitsOnSeg(a, b, ring) {
+    var hits = [];
+    var ab = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+    for (var i = 0; i < ring.length; i++) {
+      var pt = segIntersect(a, b, ring[i], ring[(i + 1) % ring.length]);
+      if (!pt) continue;
+      var t =
+        ((pt[0] - a[0]) * (b[0] - a[0]) + (pt[1] - a[1]) * (b[1] - a[1])) /
+        (ab * ab);
+      t = Math.max(0, Math.min(1, t));
+      hits.push({ t: t, p: pt });
+    }
+    hits.sort(function (u, v) {
+      return u.t - v.t;
+    });
+    var out = [];
+    for (var h = 0; h < hits.length; h++) {
+      if (
+        out.length &&
+        Math.hypot(
+          hits[h].p[0] - out[out.length - 1].p[0],
+          hits[h].p[1] - out[out.length - 1].p[1]
+        ) < 0.2
+      )
+        continue;
+      out.push(hits[h]);
+    }
+    return out;
+  }
+  var lastPenEx = null;
+  function penLog(evt) {
+    evt = evt || {};
+    evt.t = Date.now();
+    evt.seq = (window.__penSeq = (window.__penSeq || 0) + 1);
+    window.__penLog = window.__penLog || [];
+    window.__penLog.push(evt);
+    var bar = document.getElementById("pen-log-bar");
+    if (bar)
+      bar.textContent =
+        "лог #" +
+        evt.seq +
+        " · " +
+        (evt.type || "?") +
+        " · " +
+        (evt.why || evt.target || "") +
+        (evt.applied ? " · записано" : "") +
+        " · чертите и Ctrl+Z, потом напишите «готово»";
+    try {
+      fetch("/api/pen-log", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(evt),
+        keepalive: true,
+      });
+    } catch (err) {}
+  }
+  function extractExcursion(stroke, ring) {
+    lastPenEx = { why: "short_stroke", n: stroke ? stroke.length : 0, nContacts: 0, nPayload: 0 };
+    if (!stroke || stroke.length < 2 || !ring || ring.length < 3) return null;
+    var contacts = [];
+    function pushC(s, pt) {
+      var last = contacts[contacts.length - 1];
+      if (last && Math.abs(s - last.s) < 1e-4) return;
+      if (
+        last &&
+        Math.hypot(pt[0] - last.p[0], pt[1] - last.p[1]) < 0.25
+      )
+        return;
+      contacts.push({ s: s, p: pt });
+    }
+    for (var i = 0; i + 1 < stroke.length; i++) {
+      var hs = penHitsOnSeg(stroke[i], stroke[i + 1], ring);
+      for (var j = 0; j < hs.length; j++) pushC(i + hs[j].t, hs[j].p);
+    }
+    for (var k = 0; k < stroke.length; k++) {
+      if (penLoc(stroke[k], ring) === "on") pushC(k, stroke[k]);
+    }
+    contacts.sort(function (u, v) {
+      return u.s - v.s;
+    });
+    lastPenEx.nContacts = contacts.length;
+    if (contacts.length < 2) {
+      lastPenEx.why = "contacts_lt_2";
+      return null;
+    }
+    function sample(s) {
+      if (s <= 0) return stroke[0];
+      if (s >= stroke.length - 1) return stroke[stroke.length - 1];
+      var ii = Math.floor(s),
+        tt = s - ii;
+      var aa = stroke[ii],
+        bb = stroke[Math.min(ii + 1, stroke.length - 1)];
+      return [aa[0] + (bb[0] - aa[0]) * tt, aa[1] + (bb[1] - aa[1]) * tt];
+    }
+    var payload = [];
+    for (var c = 0; c + 1 < contacts.length; c++) {
+      var midS = (contacts[c].s + contacts[c + 1].s) / 2;
+      if (penLoc(sample(midS), ring) === "out")
+        payload.push([contacts[c], contacts[c + 1]]);
+    }
+    lastPenEx.nPayload = payload.length;
+    if (payload.length !== 1) {
+      lastPenEx.why = payload.length === 0 ? "payloads_0" : "payloads_" + payload.length;
+      return null;
+    }
+    var s0 = payload[0][0].s,
+      S = payload[0][0].p,
+      s1 = payload[0][1].s,
+      E = payload[0][1].p;
+    if (s1 - s0 < 1e-4) {
+      lastPenEx.why = "span_tiny";
+      return null;
+    }
+    var mid = [S];
+    for (var m = 0; m < stroke.length; m++) {
+      if (s0 < m && m < s1) mid.push(stroke[m]);
+    }
+    mid.push(E);
+    if (mid.length < 2) {
+      lastPenEx.why = "mid_short";
+      return null;
+    }
+    lastPenEx.why = "ok";
+    lastPenEx.S = [S[0], S[1]];
+    lastPenEx.E = [E[0], E[1]];
+    lastPenEx.s0 = s0;
+    lastPenEx.s1 = s1;
+    lastPenEx.midN = mid.length;
+    return { S: S, E: E, mid: mid };
+  }
+  function penCentroid(ring) {
+    var sx = 0,
+      sy = 0,
+      n = ring.length || 1;
+    for (var i = 0; i < ring.length; i++) {
+      sx += ring[i][0];
+      sy += ring[i][1];
+    }
+    return [sx / n, sy / n];
+  }
+  function penCross(a, b, p) {
+    return (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0]);
+  }
+  function growMid(mid, ring, neighbors, gap, face) {
+    gap = gap || SEAM_GAP;
+    face = face || PEN_FACE;
+    if (mid.length < 2) return mid;
+    var S = mid[0],
+      E = mid[mid.length - 1];
+    var interior = penCentroid(ring);
+    var out = [S];
+    for (var i = 1; i < mid.length - 1; i++) {
+      var p = mid[i];
+      var Q = closestOnRingIdx(p, ring);
+      var qx = Q.x,
+        qy = Q.y;
+      var drawn = Math.hypot(p[0] - qx, p[1] - qy);
+      var onSeam = false,
+        budget = drawn;
+      if (neighbors && neighbors.length) {
+        var nQ = closestOnAnyRing([qx, qy], neighbors);
+        var nP = closestOnAnyRing(p, neighbors);
+        var qn = nQ ? nQ.d : 1e18;
+        var pd = nP ? nP.d : 1e18;
+        if (qn <= face || pd <= face) {
+          onSeam = true;
+          budget = Math.max(0, qn - gap);
+        }
+      }
+      if (onSeam) {
+        if (drawn < 1e-9) out.push([qx, qy]);
+        else {
+          var t = Math.min(1, budget / drawn);
+          out.push([qx + (p[0] - qx) * t, qy + (p[1] - qy) * t]);
+        }
+      } else {
+        var sp = penCross(S, E, p);
+        var si = penCross(S, E, interior);
+        var bay = Math.abs(sp) >= 1e-8 && sp > 0 === si > 0;
+        out.push(bay ? p : [qx, qy]);
+      }
+    }
+    out.push(E);
+    return out;
+  }
+  function walkVerts(ring, iFrom, iTo) {
+    var pts = [];
+    var n = ring.length;
+    var k = (iFrom + 1) % n;
+    var guard = 0;
+    while (k !== iTo && guard <= n) {
+      pts.push(ring[k]);
+      k = (k + 1) % n;
+      guard++;
+    }
+    return pts;
+  }
+  function assembleRing(ring, S, E, newMid) {
+    if (!ring || ring.length < 3 || !newMid || newMid.length < 2) return null;
+    var cS = closestOnRingIdx(S, ring);
+    var cE = closestOnRingIdx(E, ring);
+    if (!cS || !cE) return null;
+    var iS = cS.idx,
+      iE = cE.idx;
+    var cands;
+    if (iS === iE) {
+      var around = ring.slice(iS + 1).concat(ring.slice(0, iS + 1));
+      cands = [newMid.concat(around), newMid.slice()];
+    } else {
+      cands = [
+        newMid.concat(walkVerts(ring, iE, iS)),
+        newMid.slice().reverse().concat(walkVerts(ring, iS, iE)),
+      ];
+    }
+    var orig = signedArea(ring);
+    var origSign = orig >= 0;
+    var best = null,
+      bestA = -1;
+    for (var i = 0; i < cands.length; i++) {
+      var cand = cands[i];
+      if (cand.length < 4) continue;
+      var a = signedArea(cand);
+      if (a >= 0 !== origSign) continue;
+      if (Math.abs(a) > bestA) {
+        bestA = Math.abs(a);
+        best = cand;
+      }
+    }
+    if (!best || bestA < Math.abs(orig) * 0.45) return null;
+    return best;
+  }
+  function stripClosed(ring) {
+    var r = ring ? ring.slice() : [];
+    if (
+      r.length > 1 &&
+      r[0][0] === r[r.length - 1][0] &&
+      r[0][1] === r[r.length - 1][1]
+    )
+      r.pop();
+    return r;
+  }
+  function quadraticPts(s, y, e, n) {
+    n = n || 24;
+    if (n < 2) n = 2;
+    var pts = [];
+    for (var i = 0; i <= n; i++) {
+      var t = i / n,
+        u = 1 - t;
+      pts.push([
+        u * u * s[0] + 2 * u * t * y[0] + t * t * e[0],
+        u * u * s[1] + 2 * u * t * y[1] + t * t * e[1],
+      ]);
+    }
+    return pts;
+  }
+  function offsetOpen(pts, dist, toward) {
+    if (!pts || pts.length < 2) return pts ? pts.slice() : [];
+    var nrms = [];
+    for (var i = 0; i < pts.length; i++) {
+      var a, b;
+      if (i === 0) {
+        a = pts[0];
+        b = pts[1];
+      } else if (i === pts.length - 1) {
+        a = pts[pts.length - 2];
+        b = pts[pts.length - 1];
+      } else {
+        a = pts[i - 1];
+        b = pts[i + 1];
+      }
+      var vx = b[0] - a[0],
+        vy = b[1] - a[1];
+      var ln = Math.hypot(vx, vy) || 1;
+      nrms.push([-vy / ln, vx / ln]);
+    }
+    var p0 = pts[(pts.length / 2) | 0];
+    var n0 = nrms[(nrms.length / 2) | 0];
+    var dpos = Math.hypot(p0[0] + n0[0] - toward[0], p0[1] + n0[1] - toward[1]);
+    var dneg = Math.hypot(p0[0] - n0[0] - toward[0], p0[1] - n0[1] - toward[1]);
+    var sgn = dpos < dneg ? 1 : -1;
+    var out = [];
+    for (var k = 0; k < pts.length; k++)
+      out.push([
+        pts[k][0] + sgn * nrms[k][0] * dist,
+        pts[k][1] + sgn * nrms[k][1] * dist,
+      ]);
+    return out;
+  }
+  function densifyOpen(pts, step) {
+    step = step || 2;
+    if (!pts || pts.length < 2) return pts ? pts.slice() : [];
+    var out = [pts[0]];
+    for (var i = 0; i + 1 < pts.length; i++) {
+      var a = pts[i],
+        b = pts[i + 1];
+      var d = Math.hypot(b[0] - a[0], b[1] - a[1]);
+      var n = Math.max(1, Math.round(d / step));
+      for (var k = 1; k <= n; k++) {
+        var t = k / n;
+        out.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]);
+      }
+    }
+    return out;
+  }
+  function pullWalk(walk, yellow) {
+    if (!walk || walk.length < 2) return walk ? walk.slice() : [];
+    var acc = [0];
+    for (var i = 1; i < walk.length; i++)
+      acc.push(
+        acc[i - 1] +
+          Math.hypot(walk[i][0] - walk[i - 1][0], walk[i][1] - walk[i - 1][1])
+      );
+    var L = acc[acc.length - 1] || 1;
+    var tHit = 0.5,
+      best = 1e9;
+    for (var i = 0; i + 1 < walk.length; i++) {
+      var c = closestOnSeg(yellow, walk[i], walk[i + 1]);
+      if (c.d < best) {
+        best = c.d;
+        var seg =
+          Math.hypot(
+            walk[i + 1][0] - walk[i][0],
+            walk[i + 1][1] - walk[i][1]
+          ) || 1;
+        tHit = (acc[i] + c.t * seg) / L;
+      }
+    }
+    if (tHit < 0.02) tHit = 0.02;
+    if (tHit > 0.98) tHit = 0.98;
+    var hitQ = closestOnOpen(yellow, walk).q;
+    var vx = yellow[0] - hitQ[0];
+    var vy = yellow[1] - hitQ[1];
+    var out = [];
+    for (var i = 0; i < walk.length; i++) {
+      var t = acc[i] / L;
+      var w = t <= tHit ? t / tHit : (1 - t) / (1 - tHit);
+      w = w * w * (3 - 2 * w);
+      out.push([walk[i][0] + vx * w, walk[i][1] + vy * w]);
+    }
+    out[0] = [walk[0][0], walk[0][1]];
+    out[out.length - 1] = [
+      walk[walk.length - 1][0],
+      walk[walk.length - 1][1],
+    ];
+    return out;
+  }
+  function closestOnPoly(p, pts, closed) {
+    var best = { q: pts[0], d: 1e9 };
+    var n = pts.length;
+    var last = closed ? n : n - 1;
+    for (var i = 0; i < last; i++) {
+      var c = closestOnSeg(p, pts[i], pts[(i + 1) % n]);
+      if (c.d < best.d) best = { q: [c.x, c.y], d: c.d };
+    }
+    return best;
+  }
+  function pushOff(pts, other, gap, asRing) {
+    if (!pts || pts.length < 2 || !other || other.length < 2) return pts;
+    var out = pts.slice();
+    var ring = asRing ? stripClosed(other) : other;
+    for (var i = 1; i < out.length - 1; i++) {
+      var c = closestOnPoly(out[i], ring, !!asRing);
+      if (c.d < 1e-6) continue;
+      var inside = asRing && pointInRing(out[i], ring);
+      if (!inside && c.d + 1e-6 >= gap) continue;
+      var ux = (out[i][0] - c.q[0]) / c.d;
+      var uy = (out[i][1] - c.q[1]) / c.d;
+      if (inside) {
+        ux = -ux;
+        uy = -uy;
+      }
+      out[i] = [c.q[0] + ux * gap, c.q[1] + uy * gap];
+    }
+    return out;
+  }
+  function walkBack(ring, iFrom, iTo) {
+    var pts = [];
+    var n = ring.length;
+    var k = (iFrom - 1 + n) % n;
+    var guard = 0;
+    while (k !== iTo && guard <= n) {
+      pts.push(ring[k]);
+      k = (k - 1 + n) % n;
+      guard++;
+    }
+    return pts;
+  }
+  function replaceFacingArc(ring, s, e, newPts, near) {
+    var r = stripClosed(ring);
+    if (r.length < 3 || !newPts || newPts.length < 2) return null;
+    var cS = closestOnRingIdx(s, r);
+    var cE = closestOnRingIdx(e, r);
+    if (!cS || !cE) return null;
+    var iS = cS.idx,
+      iE = cE.idx;
+    var cand;
+    if (iS === iE) {
+      var nR = r.length;
+      var iN = (iS + 1) % nR;
+      var around;
+      if (
+        Math.hypot(e[0] - r[iS][0], e[1] - r[iS][1]) <=
+        Math.hypot(e[0] - r[iN][0], e[1] - r[iN][1])
+      )
+        around = [r[iS]].concat(walkBack(r, iS, iN), [r[iN]]);
+      else around = [r[iN]].concat(walkVerts(r, iN, iS), [r[iS]]);
+      cand = newPts.concat(around);
+      var orig0 = signedArea(r);
+      if (signedArea(cand) >= 0 !== orig0 >= 0) cand = cand.slice().reverse();
+    } else {
+      var arcF = [s].concat(walkVerts(r, iS, iE), [e]);
+      var arcB = [s].concat(walkBack(r, iS, iE), [e]);
+      function amid(arc) {
+        return arc[(arc.length / 2) | 0];
+      }
+      var mf = amid(arcF),
+        mb = amid(arcB);
+      var df = Math.hypot(mf[0] - near[0], mf[1] - near[1]);
+      var db = Math.hypot(mb[0] - near[0], mb[1] - near[1]);
+      var other = df <= db ? arcB : arcF;
+      cand = newPts.slice(0, -1).concat(other.slice().reverse());
+    }
+    var orig = signedArea(r);
+    if (signedArea(cand) >= 0 !== orig >= 0) cand = cand.slice().reverse();
+    if (cand.length < 4) return null;
+    return cand;
+  }
+  function signedNormals(pts, toward) {
+    if (!pts || pts.length < 2) return [];
+    var nrms = [];
+    for (var i = 0; i < pts.length; i++) {
+      var a, b;
+      if (i === 0) {
+        a = pts[0];
+        b = pts[1];
+      } else if (i === pts.length - 1) {
+        a = pts[pts.length - 2];
+        b = pts[pts.length - 1];
+      } else {
+        a = pts[i - 1];
+        b = pts[i + 1];
+      }
+      var vx = b[0] - a[0],
+        vy = b[1] - a[1];
+      var ln = Math.hypot(vx, vy) || 1;
+      nrms.push([-vy / ln, vx / ln]);
+    }
+    var p0 = pts[(pts.length / 2) | 0];
+    var n0 = nrms[(nrms.length / 2) | 0];
+    var dpos = Math.hypot(p0[0] + n0[0] - toward[0], p0[1] + n0[1] - toward[1]);
+    var dneg = Math.hypot(p0[0] - n0[0] - toward[0], p0[1] - n0[1] - toward[1]);
+    var sgn = dpos < dneg ? 1 : -1;
+    return nrms.map(function (n) {
+      return [sgn * n[0], sgn * n[1]];
+    });
+  }
+  function blend01(t, edge) {
+    edge = edge == null ? 0.14 : edge;
+    if (edge <= 0) return 1;
+    var x = Math.min(t, 1 - t) / edge;
+    if (x <= 0) return 0;
+    if (x >= 1) return 1;
+    return x * x * (3 - 2 * x);
+  }
+  function buildMidline(arcA, ringB) {
+    if (!arcA || arcA.length < 2) return null;
+    var mid = [];
+    var halfs = [];
+    var far = 0;
+    for (var i = 0; i < arcA.length; i++) {
+      var q = closestOnRing(arcA[i], ringB);
+      var d = Math.hypot(arcA[i][0] - q[0], arcA[i][1] - q[1]);
+      mid.push([(arcA[i][0] + q[0]) * 0.5, (arcA[i][1] + q[1]) * 0.5]);
+      halfs.push(d * 0.5);
+      if (d > 14) far++;
+    }
+    if (far > Math.max(2, (arcA.length / 3) | 0)) return null;
+    return { mid: mid, halfs: halfs };
+  }
+  function emitFromMidline(mid, halfs, gap, towardA) {
+    var nrms = signedNormals(mid, towardA);
+    var n = mid.length;
+    var arcA = [];
+    var arcB = [];
+    var target = gap * 0.5;
+    for (var i = 0; i < n; i++) {
+      var t = n > 1 ? i / (n - 1) : 0;
+      var w = blend01(t);
+      var h0 = i < halfs.length ? halfs[i] : target;
+      var half = h0 * (1 - w) + target * w;
+      var nx = nrms[i][0],
+        ny = nrms[i][1];
+      arcA.push([mid[i][0] + nx * half, mid[i][1] + ny * half]);
+      arcB.push([mid[i][0] - nx * half, mid[i][1] - ny * half]);
+    }
+    return { A: arcA, B: arcB };
+  }
+  function interpolatingQuadratic(s, y, e, n) {
+    n = n || 28;
+    var vx = e[0] - s[0],
+      vy = e[1] - s[1];
+    var l2 = vx * vx + vy * vy || 1;
+    var t = ((y[0] - s[0]) * vx + (y[1] - s[1]) * vy) / l2;
+    t = Math.max(0.1, Math.min(0.9, t));
+    var u = 1 - t;
+    var den = 2 * u * t;
+    var ctrl = [
+      (y[0] - u * u * s[0] - t * t * e[0]) / den,
+      (y[1] - u * u * s[1] - t * t * e[1]) / den,
+    ];
+    return quadraticPts(s, ctrl, e, n);
+  }
+  function deformPair(ringA, ringB, s, e, yellow, gap, walkA) {
+    gap = gap == null ? SEAM_GAP : gap;
+    var arcA = interpolatingQuadratic(s, yellow, e, 28);
+    arcA[0] = s;
+    arcA[arcA.length - 1] = e;
+    var arcB = offsetOpen(arcA, gap, penCentroid(ringB));
+    var sb = closestOnRing(s, ringB);
+    var eb = closestOnRing(e, ringB);
+    var n = arcB.length;
+    for (var i = 0; i < n; i++) {
+      var t = n > 1 ? i / (n - 1) : 0;
+      var w = blend01(t);
+      var ex = sb[0] * (1 - t) + eb[0] * t;
+      var ey = sb[1] * (1 - t) + eb[1] * t;
+      arcB[i] = [arcB[i][0] * w + ex * (1 - w), arcB[i][1] * w + ey * (1 - w)];
+    }
+    arcB[0] = sb;
+    arcB[arcB.length - 1] = eb;
+    var a2 = replaceFacingArc(ringA, s, e, arcA, yellow);
+    var b2 = replaceFacingArc(ringB, sb, eb, arcB, yellow);
+    if (a2 && b2) {
+      a2 = clampRingGap(a2, b2, s, e, gap);
+      b2 = clampRingGap(b2, a2, sb, eb, gap);
+    }
+    return { A: a2, B: b2 };
+  }
+  function clampRingGap(ring, other, s, e, gap) {
+    var out = ring.slice();
+    var o = stripClosed(other);
+    for (var i = 0; i < out.length; i++) {
+      var p = out[i];
+      if (Math.hypot(p[0] - s[0], p[1] - s[1]) < 8) continue;
+      if (Math.hypot(p[0] - e[0], p[1] - e[1]) < 8) continue;
+      var c = closestOnPoly(p, o, true);
+      if (c.d < 1e-6) continue;
+      var inside = pointInRing(p, o);
+      if (!inside && c.d + 1e-6 >= gap) continue;
+      var ux = (p[0] - c.q[0]) / c.d;
+      var uy = (p[1] - c.q[1]) / c.d;
+      if (inside) {
+        ux = -ux;
+        uy = -uy;
+      }
+      out[i] = [c.q[0] + ux * gap, c.q[1] + uy * gap];
+    }
+    return out;
+  }
+  function vectorDoodle(target, pts) {
+    var p = null;
+    paths().forEach(function (pp) {
+      if (pp.getAttribute("data-name") === target) p = pp;
+    });
+    if (!p) return false;
+    var tid = lid(p);
+    var rings = parseD(p.getAttribute("d"));
+    var oi = largestRingIx(rings);
+    var ring = rings[oi];
+    if (!ring || ring.length < 4) return false;
+    var neighbors = [];
+    paths().forEach(function (pp) {
+      if (lid(pp) === tid || !pathVisible(pp)) return;
+      if (pp.closest && pp.closest("#water")) return;
+      var rr = parseD(pp.getAttribute("d"));
+      if (rr[0] && rr[0].length >= 3) neighbors.push(rr[0]);
+    });
+    var line = pts.map(function (pt) {
+      return [pt.x, pt.y];
+    });
+    if (line.length < 2) {
+      lastPenEx = { why: "line_short", n: line.length };
+      return false;
+    }
+    var locs = { in: 0, on: 0, out: 0 };
+    var maxOut = 0;
+    for (var li = 0; li < line.length; li++) {
+      var lk = penLoc(line[li], ring);
+      locs[lk] = (locs[lk] || 0) + 1;
+      if (lk === "out") {
+        var dd = distToRing(line[li], ring);
+        if (dd > maxOut) maxOut = dd;
+      }
+    }
+    var ex = extractExcursion(line, ring);
+    lastPenEx = lastPenEx || {};
+    lastPenEx.locs = locs;
+    lastPenEx.maxOut = Math.round(maxOut * 10) / 10;
+    lastPenEx.neigh = neighbors.length;
+    if (!ex) return false;
+    var grown = growMid(ex.mid, ring, neighbors, SEAM_GAP, PEN_FACE);
+    var nSeam = 0,
+      nBay = 0,
+      nVoid = 0,
+      peakDrawn = 0,
+      peakKept = 0;
+    var interior = penCentroid(ring);
+    for (var gi = 1; gi < ex.mid.length - 1; gi++) {
+      var gp = ex.mid[gi];
+      var gQ = closestOnRingIdx(gp, ring);
+      var drawn0 = Math.hypot(gp[0] - gQ.x, gp[1] - gQ.y);
+      if (drawn0 > peakDrawn) peakDrawn = drawn0;
+      var gk;
+      if (neighbors.length) {
+        var gnQ = closestOnAnyRing([gQ.x, gQ.y], neighbors);
+        if (gnQ && gnQ.d <= PEN_FACE) gk = "seam";
+      }
+      if (!gk) {
+        var gsp = penCross(ex.S, ex.E, gp);
+        var gsi = penCross(ex.S, ex.E, interior);
+        gk =
+          Math.abs(gsp) >= 1e-8 && gsp > 0 === gsi > 0 ? "bay" : "void";
+      }
+      if (gk === "seam") nSeam++;
+      else if (gk === "bay") nBay++;
+      else nVoid++;
+      var kept = grown[gi];
+      if (kept) {
+        var kd = Math.hypot(kept[0] - gQ.x, kept[1] - gQ.y);
+        if (kd > peakKept) peakKept = kd;
+      }
+    }
+    lastPenEx.nSeam = nSeam;
+    lastPenEx.nBay = nBay;
+    lastPenEx.nVoid = nVoid;
+    lastPenEx.peakDrawn = Math.round(peakDrawn * 10) / 10;
+    lastPenEx.peakKept = Math.round(peakKept * 10) / 10;
+    var cand = assembleRing(ring, ex.S, ex.E, grown);
+    if (!cand) {
+      lastPenEx.why = lastPenEx.why === "ok" ? "assemble_fail" : lastPenEx.why;
+      return false;
+    }
+    var newRings = rings.slice();
+    newRings[oi] = cand;
+    p.setAttribute("d", ringsToDFine(newRings));
+    buildLabels();
+    return true;
+  }
   function applyPaint() {
     if (!target) {
       hint.textContent = "выберите район";
       return;
     }
-    var ink = ctx.getImageData(0, 0, W, H).data;
-    var inkMask = new Uint8Array(W * H);
-    var has = false;
-    for (var y = 0; y < H; y++) {
-      for (var x = 0; x < W; x++) {
-        var j = (y * W + x) * 4;
-        if (!inkHits(ink, j)) continue;
-        inkMask[y * W + x] = 1;
-        has = true;
-      }
-    }
-    if (!has) return;
-    var plist = paths();
-    var tid = -1;
-    plist.forEach(function (p) {
-      if (p.getAttribute("data-name") === target) tid = lid(p);
-    });
-    if (tid < 1) return;
-    snapshotPaths("карандаш · " + short(target));
-    var neu = new Uint8Array(W * H);
-    var stolenFrom = new Uint16Array(W * H);
-    var paintedVoid = 0;
-    for (var i = 0; i < labels.length; i++) {
-      if (!inkMask[i]) continue;
-      var prev = labels[i];
-      if (prev === tid) continue;
-      if (prev === 0) {
-        labels[i] = tid;
-        neu[i] = 1;
-        paintedVoid++;
-      } else {
-        stolenFrom[i] = prev;
-      }
-    }
-    var pocket = fillEnclosedVoid(tid, inkMask, neu);
-    for (var k = 0; k < stolenFrom.length; k++) {
-      if (!stolenFrom[k]) continue;
-      labels[k] = tid;
-      neu[k] = 1;
-    }
-    keepNewWithGap(tid, neu, gapPx);
-    var claimed = 0;
-    var restored = 0;
-    var touched = {};
-    touched[tid] = 1;
-    for (var t = 0; t < stolenFrom.length; t++) {
-      if (!stolenFrom[t]) continue;
-      if (labels[t] === tid) {
-        claimed++;
-        touched[stolenFrom[t]] = 1;
-      } else {
-        labels[t] = stolenFrom[t];
-        neu[t] = 0;
-        restored++;
-      }
-    }
-    var keptNew = 0;
-    for (var n = 0; n < neu.length; n++) if (neu[n] && labels[n] === tid) keptNew++;
-    if (!keptNew && !claimed) {
-      discardLastUndo();
+    var pts = strokePts;
+    if (!pts || pts.length < 2) {
       ctx.clearRect(0, 0, W, H);
-      hint.textContent =
-        "площадь не добавилась — замкни петлю на выбранном районе или рисуй по подложке";
+      hint.textContent = "проведи линию";
       return;
     }
-    dropSpeckles(tid);
-    Object.keys(touched).forEach(function (idk) {
-      var id = parseInt(idk, 10);
-      dropSpeckles(id);
-      if (id !== tid) splitIslands(id, touched);
+    var p = null;
+    paths().forEach(function (pp) {
+      if (pp.getAttribute("data-name") === target) p = pp;
     });
-    var zoneSrc = new Uint8Array(W * H);
-    for (var zi = 0; zi < zoneSrc.length; zi++) {
-      if (inkMask[zi] || neu[zi]) zoneSrc[zi] = 1;
+    if (!p) return;
+    var tid = lid(p);
+    if (tid < 1) return;
+    var rings = parseD(p.getAttribute("d"));
+    var ring = rings[largestRingIx(rings)];
+    if (!ring || ring.length < 4) {
+      ctx.clearRect(0, 0, W, H);
+      hint.textContent = "район пуст";
+      return;
     }
-    var pdt = chebyshevDT(zoneSrc);
-    var editZone = new Uint8Array(W * H);
-    for (var z = 0; z < pdt.length; z++) if (pdt[z] <= 16) editZone[z] = 1;
-    rebuildIds(touched, editZone);
-    buildLayers();
-    document.querySelectorAll(".layer").forEach(function (el) {
-      el.classList.toggle(
-        "on",
-        selected.indexOf(el.getAttribute("data-name")) >= 0
-      );
-    });
+    snapshotPaths("карандаш · " + short(target));
+    var d0 = p.getAttribute("d");
+    var ok = vectorDoodle(target, pts);
     ctx.clearRect(0, 0, W, H);
-    if (pocket)
-      hint.textContent =
-        "добавлена площадь внутрь петли → " +
-        short(target) +
-        " · щель " +
-        gapPx +
-        "px";
-    else if (claimed)
-      hint.textContent =
-        "дорисовано + забрано у соседа → " +
-        short(target) +
-        " · щель " +
-        gapPx +
-        "px";
-    else
-      hint.textContent =
-        "дорисовано по подложке → " + short(target) + " · щель " + gapPx + "px";
+    var d1 = p.getAttribute("d");
+    var applied = !!(ok && d1 !== d0);
+    if (applied) {
+      buildLayers();
+      document.querySelectorAll(".layer").forEach(function (el) {
+        el.classList.toggle(
+          "on",
+          selected.indexOf(el.getAttribute("data-name")) >= 0
+        );
+      });
+      hint.textContent = "дорисовано → " + short(target);
+    } else {
+      discardLastUndo();
+    }
+    var ptsOut = pts.map(function (pt) {
+      return [Math.round(pt.x * 10) / 10, Math.round(pt.y * 10) / 10];
+    });
+    penLog({
+      type: "stroke",
+      target: target,
+      applied: applied,
+      why: (lastPenEx && lastPenEx.why) || (ok ? "unchanged" : "fail"),
+      n: pts.length,
+      pts: ptsOut,
+      diag: lastPenEx,
+    });
   }
 
   function nextLabelId() {
@@ -2310,6 +3194,572 @@
       e.stopPropagation();
       selectDistrict(p.getAttribute("data-name"), e.shiftKey);
     });
+  }
+
+  function isWaterPath(p) {
+    return !!(p && p.closest && p.closest("#water"));
+  }
+  function districtPaths() {
+    return paths().filter(function (p) {
+      return pathVisible(p) && !isWaterPath(p);
+    });
+  }
+  function pathByName(name) {
+    var list = districtPaths();
+    for (var i = 0; i < list.length; i++)
+      if (list[i].getAttribute("data-name") === name) return list[i];
+    return null;
+  }
+  function pathRing(p) {
+    if (!p) return null;
+    var rings = parseD(p.getAttribute("d"));
+    if (!rings.length) return null;
+    return stripClosed(rings[largestRingIx(rings)]);
+  }
+  function pinHitR() {
+    return 10 / (pan.s || 1);
+  }
+  function hitSeamPin(p) {
+    var r = pinHitR();
+    var best = null,
+      bestD = r;
+    for (var i = 0; i < seamPins.length; i++) {
+      var pin = seamPins[i];
+      var d = Math.hypot(pin.x - p.x, pin.y - p.y);
+      if (d < bestD) {
+        bestD = d;
+        best = pin;
+      }
+    }
+    return best;
+  }
+  function nearestDistrictBorder(p, maxD) {
+    var list = districtPaths();
+    var best = null,
+      bestD = maxD == null ? 12 / (pan.s || 1) : maxD;
+    var xy = [p.x, p.y];
+    for (var i = 0; i < list.length; i++) {
+      var ring = pathRing(list[i]);
+      if (!ring || ring.length < 3) continue;
+      var c = closestOnRingIdx(xy, ring);
+      if (c && c.d < bestD) {
+        bestD = c.d;
+        best = {
+          path: list[i],
+          name: list[i].getAttribute("data-name"),
+          ring: ring,
+          x: c.x,
+          y: c.y,
+          d: c.d,
+        };
+      }
+    }
+    return best;
+  }
+  function neighborAcross(hit, maxD) {
+    maxD = maxD || PEN_FACE + 4;
+    var list = districtPaths();
+    var q = [hit.x, hit.y];
+    var best = null,
+      bestD = maxD;
+    for (var i = 0; i < list.length; i++) {
+      if (list[i] === hit.path) continue;
+      var ring = pathRing(list[i]);
+      if (!ring || ring.length < 3) continue;
+      var d = distToRing(q, ring);
+      if (d < bestD) {
+        bestD = d;
+        best = {
+          path: list[i],
+          name: list[i].getAttribute("data-name"),
+          ring: ring,
+          d: d,
+        };
+      }
+    }
+    return best;
+  }
+  function pickSeamAt(p) {
+    var hit = nearestDistrictBorder(p, 14 / (pan.s || 1));
+    if (!hit) return null;
+    var nb = neighborAcross(hit, PEN_FACE + 4);
+    if (!nb) return null;
+    return {
+      pathA: hit.path,
+      nameA: hit.name,
+      ringA: hit.ring,
+      pathB: nb.path,
+      nameB: nb.name,
+      ringB: nb.ring,
+      x: hit.x,
+      y: hit.y,
+    };
+  }
+  function addRedPin(hit) {
+    var r = pinHitR();
+    for (var i = 0; i < seamPins.length; i++) {
+      if (Math.hypot(seamPins[i].x - hit.x, seamPins[i].y - hit.y) < r)
+        return seamPins[i];
+    }
+    var body = hit.name;
+    var sx = hit.x,
+      sy = hit.y;
+    var seen = {};
+    var bestD = 12;
+    for (var i = 0; i < seamPins.length; i++) {
+      var red = seamPins[i];
+      if (red.kind !== "red" || !red.name || seen[red.name]) continue;
+      seen[red.name] = 1;
+      var pr = pathByName(red.name);
+      var ring = pathRing(pr);
+      if (!ring) continue;
+      var c = closestOnRingIdx([hit.x, hit.y], ring);
+      if (c && c.d < bestD) {
+        bestD = c.d;
+        body = red.name;
+        sx = c.x;
+        sy = c.y;
+      }
+    }
+    var pin = {
+      id: ++pinSeq,
+      kind: "red",
+      x: sx,
+      y: sy,
+      name: body,
+    };
+    seamPins.push(pin);
+    return pin;
+  }
+  function removeSeamPin(pin) {
+    seamPins = seamPins.filter(function (x) {
+      return x.id !== pin.id;
+    });
+    if (ribbonDrag && ribbonDrag.yellow && ribbonDrag.yellow.id === pin.id)
+      cancelRibbon();
+  }
+  function yellowPin() {
+    for (var i = 0; i < seamPins.length; i++)
+      if (seamPins[i].kind === "yellow") return seamPins[i];
+    return null;
+  }
+  function setYellow(x, y, nameA, nameB) {
+    var ypin = yellowPin();
+    if (!ypin) {
+      ypin = { id: ++pinSeq, kind: "yellow", x: x, y: y };
+      seamPins.push(ypin);
+    }
+    ypin.x = x;
+    ypin.y = y;
+    ypin.nameA = nameA;
+    ypin.nameB = nameB;
+    return ypin;
+  }
+  function arcKey(p, ring) {
+    var c = closestOnRingIdx(p, ring);
+    if (!c) return 0;
+    return c.idx + c.t;
+  }
+  function polylineLen(pts) {
+    var L = 0;
+    for (var i = 1; i < pts.length; i++)
+      L += Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
+    return L;
+  }
+  function distToOpen(p, pts) {
+    var best = 1e9;
+    for (var i = 0; i + 1 < pts.length; i++) {
+      var d = dist2seg(p, pts[i], pts[i + 1]);
+      if (d < best) best = d;
+    }
+    return best;
+  }
+  function redsNearPair(ringA, ringB, reds) {
+    var out = [];
+    for (var i = 0; i < reds.length; i++) {
+      var p = [reds[i].x, reds[i].y];
+      if (distToRing(p, ringA) <= 12 || (ringB && distToRing(p, ringB) <= 12))
+        out.push(reds[i]);
+    }
+    return out;
+  }
+  function walkShort(ring, s, e) {
+    var r = stripClosed(ring);
+    var cS = closestOnRingIdx(s, r);
+    var cE = closestOnRingIdx(e, r);
+    if (!cS || !cE) return [s, e];
+    if (cS.idx === cE.idx) return [s, e];
+    var fwd = [s].concat(walkVerts(r, cS.idx, cE.idx), [e]);
+    var bwd = [s].concat(walkBack(r, cS.idx, cE.idx), [e]);
+    return polylineLen(fwd) <= polylineLen(bwd) ? fwd : bwd;
+  }
+  function consecutiveRedPair(ring, at, reds) {
+    var r = stripClosed(ring);
+    if (r.length < 3 || !reds || reds.length < 2) return null;
+    var keyed = reds.map(function (pin) {
+      return { pin: pin, k: arcKey([pin.x, pin.y], r) };
+    });
+    keyed.sort(function (a, b) {
+      return a.k - b.k;
+    });
+    var yk = arcKey(at, r);
+    var near = 16;
+    var hit = null;
+    var hitD = near;
+    for (var i = 0; i < keyed.length; i++) {
+      var A = keyed[i];
+      var B = keyed[(i + 1) % keyed.length];
+      if (A.pin.name && B.pin.name && A.pin.name !== B.pin.name) continue;
+      var inside;
+      if (A.k <= B.k) inside = yk >= A.k && yk <= B.k;
+      else inside = yk >= A.k || yk <= B.k;
+      if (!inside) continue;
+      var s = [A.pin.x, A.pin.y];
+      var e = [B.pin.x, B.pin.y];
+      var walk = walkShort(r, s, e);
+      var d = distToOpen(at, walk);
+      if (d < hitD) {
+        hitD = d;
+        hit = { s: s, e: e, walk: walk, name: A.pin.name || B.pin.name };
+      }
+    }
+    return hit;
+  }
+  function closestOnOpen(p, pts) {
+    var best = pts && pts[0] ? pts[0] : p,
+      bestD = 1e9;
+    if (!pts || pts.length < 2) return { q: best, d: bestD };
+    for (var i = 0; i + 1 < pts.length; i++) {
+      var c = closestOnSeg(p, pts[i], pts[i + 1]);
+      if (c.d < bestD) {
+        bestD = c.d;
+        best = [c.x, c.y];
+      }
+    }
+    return { q: best, d: bestD };
+  }
+  function arcNearPoint(ring, s, e, p) {
+    var r = stripClosed(ring);
+    var cS = closestOnRingIdx(s, r);
+    var cE = closestOnRingIdx(e, r);
+    if (!cS || !cE) return [s, e];
+    var fwd = [s].concat(walkVerts(r, cS.idx, cE.idx), [e]);
+    var bwd = [s].concat(walkBack(r, cS.idx, cE.idx), [e]);
+    return distToOpen(p, fwd) <= distToOpen(p, bwd) ? fwd : bwd;
+  }
+  function findEditZone(at) {
+    var reds = seamPins.filter(function (p) {
+      return p.kind === "red";
+    });
+    var by = {};
+    for (var i = 0; i < reds.length; i++) {
+      var n = reds[i].name || "";
+      if (!by[n]) by[n] = [];
+      by[n].push(reds[i]);
+    }
+    var best = null,
+      bestD = 16;
+    var names = Object.keys(by);
+    var nReds = 0;
+    for (var k = 0; k < names.length; k++) {
+      nReds = Math.max(nReds, by[names[k]].length);
+      if (by[names[k]].length < 2) continue;
+      var path = pathByName(names[k]);
+      var ring = pathRing(path);
+      if (!ring) continue;
+      var pair = consecutiveRedPair(ring, at, by[names[k]]);
+      if (!pair) continue;
+      var d = distToOpen(at, pair.walk);
+      if (d < bestD) {
+        bestD = d;
+        best = {
+          s: pair.s,
+          e: pair.e,
+          name: names[k],
+          path: path,
+          ring: ring,
+          walk: pair.walk,
+        };
+      }
+    }
+    return { zone: best, nReds: nReds };
+  }
+  function ensurePinsSvg() {
+    var s = document.getElementById("pins");
+    if (s) return s;
+    if (!stage) return null;
+    s = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    s.setAttribute("id", "pins");
+    stage.appendChild(s);
+    setPinsSize();
+    return s;
+  }
+  function setPinsSize() {
+    var s = document.getElementById("pins");
+    if (!s) return;
+    s.setAttribute("viewBox", "0 0 " + W + " " + H);
+    s.setAttribute("width", String(W));
+    s.setAttribute("height", String(H));
+  }
+  function renderPins() {
+    var s = ensurePinsSvg();
+    if (!s) return;
+    setPinsSize();
+    var inv = pan.s ? 1 / pan.s : 1;
+    var html = "";
+    if (ribbonDrag && ribbonDrag.s && ribbonDrag.e) {
+      html +=
+        '<line class="mouth" x1="' +
+        ribbonDrag.s[0] +
+        '" y1="' +
+        ribbonDrag.s[1] +
+        '" x2="' +
+        ribbonDrag.e[0] +
+        '" y2="' +
+        ribbonDrag.e[1] +
+        '" vector-effect="non-scaling-stroke"/>';
+    }
+    for (var i = 0; i < seamPins.length; i++) {
+      var pin = seamPins[i];
+      html +=
+        '<g transform="translate(' +
+        pin.x +
+        "," +
+        pin.y +
+        ") scale(" +
+        inv.toFixed(5) +
+        ')"><circle class="pin ' +
+        pin.kind +
+        '" r="5"/></g>';
+    }
+    s.innerHTML = html;
+  }
+  function cancelRibbon() {
+    if (!ribbonDrag) return;
+    if (ribbonDrag.pathG)
+      ribbonDrag.pathG.setAttribute("d", ribbonDrag.dG);
+    if (ribbonDrag.pathS)
+      ribbonDrag.pathS.setAttribute("d", ribbonDrag.dS);
+    if (ribbonDrag.snapped) discardLastUndo();
+    ribbonDrag = null;
+    renderPins();
+  }
+  function waterRings() {
+    var g = svg.querySelector("#water");
+    if (!g) return [];
+    return Array.prototype.slice
+      .call(g.querySelectorAll("path"))
+      .map(function (p) {
+        var rr = parseD(p.getAttribute("d"));
+        if (!rr.length) return null;
+        return stripClosed(rr[largestRingIx(rr)]);
+      })
+      .filter(Boolean);
+  }
+  function nearbyBodyNames(p, maxD) {
+    var names = [];
+    districtPaths().forEach(function (pp) {
+      var ring = pathRing(pp);
+      if (ring && distToRing(p, ring) <= maxD)
+        names.push(pp.getAttribute("data-name"));
+    });
+    waterRings().forEach(function (ring) {
+      if (distToRing(p, ring) <= maxD) names.push("#water");
+    });
+    return names;
+  }
+  function walkHasJunction(walk, nameA, nameB) {
+    if (!walk || walk.length < 3) return false;
+    for (var i = 1; i + 1 < walk.length; i++) {
+      var near = nearbyBodyNames(walk[i], PEN_FACE);
+      var extra = 0;
+      var hasA = false,
+        hasB = false;
+      for (var k = 0; k < near.length; k++) {
+        if (near[k] === nameA) hasA = true;
+        else if (near[k] === nameB) hasB = true;
+        else extra++;
+      }
+      if (hasA && hasB && extra) return true;
+    }
+    return false;
+  }
+  function hitsWater(pts) {
+    var rings = waterRings();
+    if (!rings.length || !pts) return false;
+    for (var i = 1; i + 1 < pts.length; i++) {
+      for (var r = 0; r < rings.length; r++) {
+        if (pointInRing(pts[i], rings[r])) return true;
+      }
+    }
+    return false;
+  }
+  function yellowOnGrowBody(cursor) {
+    if (!ribbonDrag) return cursor;
+    var ring = pathRing(ribbonDrag.pathG) || ribbonDrag.ringG;
+    var arc = arcNearPoint(ring, ribbonDrag.s, ribbonDrag.e, cursor);
+    var hit = closestOnOpen(cursor, arc);
+    return hit.q || cursor;
+  }
+  function applyRibbonFrame(yellow) {
+    if (!ribbonDrag || !ribbonDrag.s || !ribbonDrag.e) return false;
+    var out = deformPair(
+      ribbonDrag.ringG,
+      ribbonDrag.ringS,
+      ribbonDrag.s,
+      ribbonDrag.e,
+      yellow,
+      SEAM_GAP,
+      ribbonDrag.walk
+    );
+    if (!out.A || !out.B) return false;
+    if (hitsWater(out.A) || hitsWater(out.B)) return false;
+    var a0 = Math.abs(signedArea(ribbonDrag.ringG));
+    var b0 = Math.abs(signedArea(ribbonDrag.ringS));
+    if (Math.abs(signedArea(out.A)) < a0 * 0.45) return false;
+    if (Math.abs(signedArea(out.B)) < b0 * 0.45) return false;
+    var ringsG = parseD(ribbonDrag.dG);
+    var ringsS = parseD(ribbonDrag.dS);
+    ringsG[largestRingIx(ringsG)] = out.A;
+    ringsS[largestRingIx(ringsS)] = out.B;
+    ribbonDrag.pathG.setAttribute("d", ringsToDFine(ringsG));
+    ribbonDrag.pathS.setAttribute("d", ringsToDFine(ringsS));
+    return true;
+  }
+  function beginRibbonDrag(e, seam, pt, originPt, fixedEnds) {
+    if (!seam) return;
+    var cursor = [pt.x, pt.y];
+    var origin = originPt
+      ? [originPt.x, originPt.y]
+      : [seam.x, seam.y];
+    var found = findEditZone(origin);
+    var zone = found.zone;
+    if (fixedEnds && fixedEnds.s && fixedEnds.e && seam.nameA) {
+      var bodyPath = pathByName(seam.nameA);
+      zone = {
+        s: fixedEnds.s,
+        e: fixedEnds.e,
+        name: seam.nameA,
+        path: bodyPath,
+        ring: pathRing(bodyPath),
+        walk: walkShort(pathRing(bodyPath) || seam.ringA, fixedEnds.s, fixedEnds.e),
+      };
+    }
+    if (!zone) {
+      if (hint)
+        hint.textContent =
+          found.nReds < 2
+            ? "нужны две красные по краям участка"
+            : "жёлтая только между двумя соседними красными";
+      return;
+    }
+    var mid = [
+      (zone.s[0] + zone.e[0]) / 2,
+      (zone.s[1] + zone.e[1]) / 2,
+    ];
+    var nb = neighborAcross(
+      { path: zone.path, x: mid[0], y: mid[1] },
+      PEN_FACE + 4
+    );
+    if (!nb || nb.name === zone.name) {
+      if (hint) hint.textContent = "это не шов — внешний край не тянем";
+      return;
+    }
+    if (walkHasJunction(zone.walk, zone.name, nb.name)) {
+      if (hint)
+        hint.textContent =
+          "тройник внутри участка — красные до узла и после, не через него";
+      return;
+    }
+    var ringG = zone.ring;
+    var ringS = nb.ring;
+    if (!ringG || !ringS) return;
+    ignoreClicksUntil = Date.now() + 800;
+    ribbonDrag = {
+      pathG: zone.path,
+      pathS: nb.path,
+      dG: zone.path.getAttribute("d"),
+      dS: nb.path.getAttribute("d"),
+      ringG: ringG,
+      ringS: ringS,
+      nameG: zone.name,
+      nameS: nb.name,
+      snapped: false,
+      s: zone.s,
+      e: zone.e,
+      walk: zone.walk || walkShort(ringG, zone.s, zone.e),
+    };
+    var onBody = closestOnOpen(origin, zone.walk);
+    var ypin = setYellow(onBody.q[0], onBody.q[1], zone.name, nb.name);
+    ypin.s = zone.s;
+    ypin.e = zone.e;
+    ypin.nameA = zone.name;
+    ypin.nameB = nb.name;
+    ribbonDrag.yellow = ypin;
+    snapshotPaths("шов · " + short(zone.name));
+    ribbonDrag.snapped = true;
+    if (!applyRibbonFrame(cursor)) {
+      discardLastUndo();
+      ribbonDrag = null;
+      if (hint) hint.textContent = "это не шов — внешний край не тянем";
+      renderPins();
+      return;
+    }
+    var vis = yellowOnGrowBody(cursor);
+    setYellow(vis[0], vis[1], zone.name, nb.name);
+    try {
+      viewport.setPointerCapture(e.pointerId);
+    } catch (err) {}
+    if (hint)
+      hint.textContent =
+        "тянем шов → " + short(zone.name) + " растёт, " + short(nb.name) + " худеет";
+    renderPins();
+  }
+  function beginRibbonFromPin(e, pin) {
+    var p = { x: pin.x, y: pin.y };
+    var bodyName = pin.nameA;
+    var pA = pathByName(bodyName);
+    var pB = pathByName(pin.nameB);
+    var seam = null;
+    if (pA && pB)
+      seam = {
+        pathA: pA,
+        nameA: bodyName,
+        ringA: pathRing(pA),
+        pathB: pB,
+        nameB: pin.nameB,
+        ringB: pathRing(pB),
+        x: pin.x,
+        y: pin.y,
+      };
+    if (!seam) seam = pickSeamAt(p);
+    if (!seam) return;
+    var fixed =
+      pin.s && pin.e ? { s: pin.s, e: pin.e } : null;
+    beginRibbonDrag(e, seam, p, p, fixed);
+  }
+  function moveRibbon(e) {
+    if (!ribbonDrag) return;
+    var pt = pos(e);
+    applyRibbonFrame([pt.x, pt.y]);
+    var vis = yellowOnGrowBody([pt.x, pt.y]);
+    setYellow(vis[0], vis[1], ribbonDrag.nameG, ribbonDrag.nameS);
+    renderPins();
+  }
+  function endRibbon(e) {
+    if (!ribbonDrag) return;
+    if (e) moveRibbon(e);
+    var g = ribbonDrag.nameG,
+      s = ribbonDrag.nameS;
+    ribbonDrag = null;
+    ignoreClicksUntil = Date.now() + 400;
+    buildLabels();
+    buildLayers();
+    if (hint)
+      hint.textContent =
+        "шов сдвинут · " + short(g) + " / " + short(s);
+    renderPins();
+    scheduleSave();
   }
 
   function applyVoid(kind) {
@@ -2513,6 +3963,40 @@
       }
     }
     return { punched: punched, kept: kept };
+  }
+  function seamSnap(tid, neu, gap, pull) {
+    gap = gap || SEAM_GAP;
+    pull = pull == null ? SEAM_PULL : pull;
+    var foreign = new Uint8Array(W * H);
+    var hasForeign = false;
+    for (var i = 0; i < labels.length; i++) {
+      if (labels[i] && labels[i] !== tid) {
+        foreign[i] = 1;
+        hasForeign = true;
+      }
+    }
+    if (!hasForeign) return { punched: 0, pulled: 0 };
+    var dt = chebyshevDT(foreign);
+    var dn = chebyshevDT(neu);
+    var punched = 0,
+      pulled = 0;
+    for (var j = 0; j < labels.length; j++) {
+      if (!neu[j] || labels[j] !== tid) continue;
+      if (dt[j] > 0 && dt[j] <= gap) {
+        labels[j] = 0;
+        neu[j] = 0;
+        punched++;
+      }
+    }
+    for (var k = 0; k < labels.length; k++) {
+      if (labels[k] !== 0) continue;
+      if (dt[k] > gap && dt[k] <= gap + pull && dn[k] <= pull) {
+        labels[k] = tid;
+        neu[k] = 1;
+        pulled++;
+      }
+    }
+    return { punched: punched, pulled: pulled };
   }
   function nearestTwoIds(x, y, maxr) {
     var first = 0;
@@ -2802,6 +4286,7 @@
     paths().forEach(function (p) {
       var nm = p.getAttribute("data-name");
       if (names.indexOf(nm) < 0) return;
+      if (!pathVisible(p)) return;
       if (!p.getAttribute("data-orig-d"))
         p.setAttribute("data-orig-d", p.getAttribute("d") || "");
       var baseD = p.getAttribute("data-orig-d");
@@ -2822,7 +4307,7 @@
     });
     var seamsChanged = 0;
     if (!restore)
-      seamsChanged = seamAlignPathsAll(names && names.length ? names : null);
+      seamsChanged = seamAlignPathsAll(names && names.length ? names : null, SEAM_GAP);
     if (typeof buildLabels === "function") buildLabels();
     if (hint)
       hint.textContent = restore
@@ -2842,8 +4327,7 @@
     smoothDistrictPaths(all);
   }
   function smoothSelected() {
-    if (selected && selected.length) smoothDistrictPaths(selected.slice());
-    else smoothAll();
+    smoothAll();
   }
   function resampleChain(chain, n) {
     if (!chain.length) return [];
@@ -2892,7 +4376,27 @@
       if (runs[i].length > best.length) best = runs[i];
     return best;
   }
-  function seamAlignPairRings(ringsA, ringsB, maxD) {
+  function offsetMid(mid, fa, fb, gap) {
+    var n = mid.length;
+    var a = resampleChain(fa, n),
+      b = resampleChain(fb, n);
+    var half = gap / 2;
+    var A = [],
+      B = [];
+    for (var i = 0; i < n; i++) {
+      var mx = mid[i][0],
+        my = mid[i][1];
+      var dax = a[i][0] - mx,
+        day = a[i][1] - my;
+      var dal = Math.hypot(dax, day);
+      var ux = dal > 1e-6 ? dax / dal : 0,
+        uy = dal > 1e-6 ? day / dal : 0;
+      A.push([mx + ux * half, my + uy * half]);
+      B.push([mx - ux * half, my - uy * half]);
+    }
+    return { A: A, B: B };
+  }
+  function seamAlignPairRings(ringsA, ringsB, maxD, gap) {
     var A = ringsA[0],
       B = ringsB[0];
     if (!A || !B || A.length < 4 || B.length < 4) return null;
@@ -2927,22 +4431,30 @@
     var fbO = fb[0][0] === fb0[0] && fb[0][1] === fb0[1] ? fb : fb.slice().reverse();
     var mid = midpointChain(faO, fbO);
     if (mid.length < 2) return null;
+    var chainA = mid,
+      chainB = mid;
+    if (gap > 0) {
+      var off = offsetMid(mid, faO, fbO, gap);
+      chainA = off.A;
+      chainB = off.B;
+    }
     var tailA = walkRing(A, fa1, fa0, true).slice(1);
-    var newA = mid.concat(tailA);
+    var newA = chainA.concat(tailA);
     var tailB = walkRing(B, fb1, fb0, true).slice(1);
-    var newB = mid.slice().reverse().concat(tailB);
+    var newB = chainB.slice().reverse().concat(tailB);
     return {
       A: [newA].concat(ringsA.slice(1)),
       B: [newB].concat(ringsB.slice(1)),
     };
   }
-  function seamAlignPathsAll(onlyNames) {
+  function seamAlignPathsAll(onlyNames, gap) {
     var all = paths();
     var changed = 0;
     for (var i = 0; i < all.length; i++) {
       for (var j = i + 1; j < all.length; j++) {
         var pa = all[i],
           pb = all[j];
+        if (!pathVisible(pa) || !pathVisible(pb)) continue;
         if (onlyNames && onlyNames.length) {
           var na = pa.getAttribute("data-name"),
             nb = pb.getAttribute("data-name");
@@ -2951,7 +4463,7 @@
         var ra = parseD(pa.getAttribute("d")),
           rb = parseD(pb.getAttribute("d"));
         if (!ra[0] || !rb[0]) continue;
-        var r = seamAlignPairRings(ra, rb, 9);
+        var r = seamAlignPairRings(ra, rb, 9, gap);
         if (!r) continue;
         pa.setAttribute("d", ringsToDFine(r.A));
         pb.setAttribute("d", ringsToDFine(r.B));
@@ -3525,8 +5037,10 @@
     var extra = afterKeep - beforeKeep - allGap.length;
     if (!stitchOk || extra > 8) {
       var snap = undoStack.pop();
-      if (snap && snap.labels) labels = snap.labels.slice();
-      if (snap && snap.html) restoreDom(snap.html, snap);
+      if (snap) {
+        if (snap.type === "stroke") ctx.putImageData(snap.data, 0, 0);
+        else restoreSnapshot(snap.snap);
+      }
       renderJournal();
       if (hint)
         hint.textContent = stitchOk
@@ -3561,14 +5075,6 @@
     if (!target && hint)
       hint.textContent = "сначала район в слоях — карандаш отдаёт ему землю";
   };
-  document.getElementById("btn-erase").onclick = function () {
-    setMode("erase");
-  };
-  var knifeBtn = document.getElementById("btn-knife");
-  if (knifeBtn)
-    knifeBtn.onclick = function () {
-      setMode("knife");
-    };
   var rulerBtn = document.getElementById("btn-ruler");
   if (rulerBtn)
     rulerBtn.onclick = function () {
@@ -3579,7 +5085,7 @@
     markerBtn.onclick = function () {
       setMode("marker");
     };
-  var magnetBtn = document.getElementById("btn-magnet");
+var magnetBtn = document.getElementById("btn-magnet");
   if (magnetBtn)
     magnetBtn.onclick = function () {
       magnetOn = !magnetOn;
@@ -3604,8 +5110,12 @@
       setHand(true);
       if (hint) hint.textContent = "рука — тащи карту · снова рука или V — выход";
     };
-  document.getElementById("btn-undo").onclick = undo;
-  document.getElementById("btn-redo").onclick = redo;
+  document.getElementById("btn-undo").onclick = function () {
+    undo();
+  };
+  document.getElementById("btn-redo").onclick = function () {
+    redo();
+  };
   document.getElementById("btn-fit").onclick = fit;
   var smoothBtn = document.getElementById("btn-smooth");
   if (smoothBtn)
@@ -3652,6 +5162,17 @@
     railLayers.onclick = function () {
       showLeft("layers");
     };
+  var appRoot = document.querySelector(".app");
+  var railCollapse = document.getElementById("rail-collapse");
+  if (railCollapse)
+    railCollapse.onclick = function () {
+      if (!appRoot) return;
+      appRoot.classList.toggle("sb-collapsed");
+      saveSidebarPref("collapsed", appRoot.classList.contains("sb-collapsed"));
+    };
+  if (appRoot && sidebarPref("collapsed", false)) {
+    appRoot.classList.add("sb-collapsed");
+  }
 
   var crossEl = document.getElementById("cross");
   var xyEl = document.getElementById("xy");
@@ -3732,6 +5253,7 @@
     s.setAttribute("viewBox", "0 0 " + W + " " + H);
     s.setAttribute("width", String(W));
     s.setAttribute("height", String(H));
+    setPinsSize();
   }
   function isCoast(x, y) {
     x = x | 0;
@@ -3787,6 +5309,29 @@
     if (!magnetOn || (ev && ev.altKey))
       return { x: p.x, y: p.y, snap: false, id: 0 };
     return snapToCoast(p.x, p.y, otherId || 0);
+  }
+  function snapToTargetPoint(ev) {
+    var p = pos(ev);
+    if (!magnetOn || (ev && ev.altKey))
+      return { x: p.x, y: p.y, snap: false, id: 0 };
+    if (!target)
+      return { x: p.x, y: p.y, snap: false, id: 0 };
+    var tp = null;
+    paths().forEach(function (pp) {
+      if (pp.getAttribute("data-name") === target) tp = pp;
+    });
+    if (!tp) return { x: p.x, y: p.y, snap: false, id: 0 };
+    var rings = parseD(tp.getAttribute("d"));
+    var ring = rings[largestRingIx(rings)];
+    if (!ring || ring.length < 3)
+      return { x: p.x, y: p.y, snap: false, id: 0 };
+    var R = MAGNET_R / (pan.s || 1);
+    if (R < 1) R = 1;
+    if (distToRing([p.x, p.y], ring) <= R) {
+      var q = closestOnRing([p.x, p.y], ring);
+      return { x: q[0], y: q[1], snap: true, id: lid(tp) };
+    }
+    return { x: p.x, y: p.y, snap: false, id: 0 };
   }
   function syncMagnetBtn() {
     var b = document.getElementById("btn-magnet");
@@ -3874,7 +5419,7 @@
     box.innerHTML = String(svgText || "").trim();
     var neu = box.querySelector("svg");
     if (!neu || !stage) return false;
-    var old = stage.querySelector("svg:not(#ruler)");
+    var old = stage.querySelector("svg:not(#ruler):not(#doodle):not(#pins)");
     if (old) old.replaceWith(neu);
     else stage.insertBefore(neu, canvas);
     svg = neu;
@@ -3887,6 +5432,11 @@
     stage.style.height = H + "px";
     setRulerSize();
     clearRuler();
+    seamPins = [];
+    pinSeq = 0;
+    pendingRibbon = null;
+    ribbonDrag = null;
+    renderPins();
     labels = new Uint16Array(W * H);
     undoStack = [];
     redoStack = [];
@@ -3905,12 +5455,24 @@
     });
     bindSvgShell();
     initLayers();
-    if (pendingLayerState && pendingLayerState.layers) {
-      layerList = pendingLayerState.layers;
-      if (pendingLayerState.activeLayerId)
-        activeLayerId = pendingLayerState.activeLayerId;
-      if (pendingLayerState.layerSeq) layerSeq = pendingLayerState.layerSeq;
-      applyLayerVisibility();
+    if (pendingLayerState) {
+      if (pendingLayerState.layers) {
+        layerList = pendingLayerState.layers;
+        if (pendingLayerState.activeLayerId)
+          activeLayerId = pendingLayerState.activeLayerId;
+        if (pendingLayerState.layerSeq) layerSeq = pendingLayerState.layerSeq;
+        applyLayerVisibility();
+      }
+      if (pendingLayerState.journal) {
+        var j = pendingLayerState.journal;
+        undoStack = (j.undo || []).filter(function (s) {
+          return s && s.type === "apply" && s.snap;
+        });
+        redoStack = (j.redo || []).filter(function (s) {
+          return s && s.type === "apply" && s.snap;
+        });
+        actionSeq = j.seq || 0;
+      }
       pendingLayerState = null;
     }
     bindOverlayClicks();
@@ -3987,7 +5549,7 @@
     var tgt = document.getElementById("map-search-target");
     if (tgt)
       tgt.textContent = m.name
-        ? "загрузить в «" + m.name + "» · ПКМ по проекту — удалить"
+        ? "в проект: «" + m.name + "» — найди и добавь район/город/область"
         : "загрузка в текущий проект";
     renderMapList(lastCatalog);
   }
@@ -4075,6 +5637,20 @@
     if (layersFold) box.appendChild(layersFold);
     if (journalBox) box.appendChild(journalBox);
   }
+  function sidebarPref(key, def) {
+    try {
+      var raw = localStorage.getItem("nl_sb_" + key);
+      return raw ? JSON.parse(raw) : def;
+    } catch (e) {
+      return def;
+    }
+  }
+  function saveSidebarPref(key, val) {
+    try {
+      localStorage.setItem("nl_sb_" + key, JSON.stringify(val));
+    } catch (e) {}
+  }
+  var dragSlug = null;
   function renderMapList(cat) {
     if (cat) lastCatalog = cat;
     if (!mapListEl) return;
@@ -4091,11 +5667,70 @@
         "открой http://127.0.0.1:8765 — file:// не ходит в OSM";
       mapListEl.appendChild(note);
     }
+    var maps = lastCatalog.maps || [];
+    var order = sidebarPref("order", []);
+    var minimized = sidebarPref("min", {});
+    var sortKey = {};
+    order.forEach(function (s, i) {
+      sortKey[s] = i;
+    });
+    var sorted = maps.slice().sort(function (a, b) {
+      var ka = sortKey[a.slug],
+        kb = sortKey[b.slug];
+      if (ka == null && kb == null) return 0;
+      if (ka == null) return 1;
+      if (kb == null) return -1;
+      return ka - kb;
+    });
     var currentCard = null;
-    (lastCatalog.maps || []).forEach(function (m) {
+    sorted.forEach(function (m) {
       var card = document.createElement("div");
-      card.className = "map-item" + (m.slug === currentSlug ? " on" : "");
+      card.className =
+        "map-item" +
+        (m.slug === currentSlug ? " on" : "") +
+        (minimized[m.slug] ? " min" : "");
       card.setAttribute("data-slug", m.slug);
+      card.draggable = true;
+      card.addEventListener("dragstart", function (e) {
+        dragSlug = m.slug;
+        card.classList.add("dragging");
+        if (e.dataTransfer) {
+          e.dataTransfer.effectAllowed = "move";
+          try {
+            e.dataTransfer.setData("text/plain", m.slug);
+          } catch (err) {}
+        }
+      });
+      card.addEventListener("dragend", function () {
+        card.classList.remove("dragging");
+        dragSlug = null;
+        var newOrder = [];
+        Array.prototype.slice
+          .call(mapListEl.querySelectorAll(".map-item"))
+          .forEach(function (c) {
+            newOrder.push(c.getAttribute("data-slug"));
+          });
+        saveSidebarPref("order", newOrder);
+      });
+      card.addEventListener("dragover", function (e) {
+        e.preventDefault();
+        if (dragSlug && dragSlug !== m.slug) card.classList.add("drag-over");
+      });
+      card.addEventListener("dragleave", function () {
+        card.classList.remove("drag-over");
+      });
+      card.addEventListener("drop", function (e) {
+        e.preventDefault();
+        card.classList.remove("drag-over");
+        if (!dragSlug || dragSlug === m.slug) return;
+        var src = mapListEl.querySelector(
+          '.map-item[data-slug="' + dragSlug + '"]'
+        );
+        if (src && src !== card) {
+          var next = card.nextSibling;
+          mapListEl.insertBefore(src, next === src ? card : next);
+        }
+      });
       var b = document.createElement("button");
       b.type = "button";
       b.className = "map-item-btn";
@@ -4105,9 +5740,9 @@
       b.querySelector(".meta").textContent = kindLabel(m);
       b.onclick = function () {
         if (m.slug === currentSlug) {
-          layersOpen = !layersOpen;
-          var fold = document.getElementById("layers-fold");
-          if (fold) fold.classList.toggle("open", layersOpen);
+          minimized[m.slug] = !minimized[m.slug];
+          saveSidebarPref("min", minimized);
+          renderMapList();
           return;
         }
         openMap(m);
@@ -4137,10 +5772,27 @@
     if (mapSearch && box) box.appendChild(mapSearch);
   }
   function editorState() {
+    function compact(list) {
+      var out = [];
+      for (var i = 0; i < list.length; i++) {
+        if (list[i].type !== "apply") continue;
+        out.push({
+          type: "apply",
+          id: list[i].id,
+          label: list[i].label,
+          snap: list[i].snap,
+        });
+      }
+      return out;
+    }
+    var maxJournal = 25;
+    var undo = compact(undoStack);
+    if (undo.length > maxJournal) undo = undo.slice(undo.length - maxJournal);
     return {
       layers: JSON.parse(JSON.stringify(layerList)),
       activeLayerId: activeLayerId,
       layerSeq: layerSeq,
+      journal: { undo: undo, redo: compact(redoStack), seq: actionSeq },
     };
   }
   function currentSvgText() {
@@ -4244,6 +5896,7 @@
       })
       .then(function (j) {
         if (op !== mapOp) return;
+        if (mapHits) mapHits.innerHTML = "";
         pendingLayerState = j.state || null;
         currentSlug = (j.map && j.map.slug) || m.slug;
         remountSvg(j.svg);
@@ -4266,6 +5919,16 @@
     if (hint && text) hint.textContent = text;
     if (mapSearch) mapSearch.classList.toggle("busy", !!on);
     if (mapGo) mapGo.disabled = !!on;
+  }
+  function toggleMapSearch(force) {
+    if (!mapSearch) return;
+    var show =
+      force !== undefined ? !!force : !mapSearch.classList.contains("show");
+    mapSearch.classList.toggle("show", show);
+    if (show && mapQ) setTimeout(function () {
+      mapQ.focus();
+    }, 0);
+    return show;
   }
   function pickBestHit(q, hits) {
     q = String(q || "")
@@ -4324,10 +5987,6 @@
       setMapStatus("запусти: python scripts/map_server.py");
       return;
     }
-    if (!currentSlug) {
-      setMapStatus("сначала создай проект — кнопка +");
-      return;
-    }
     setBusy(true, "ищу «" + q + "»…");
     fetch("/api/search?q=" + encodeURIComponent(q), {
       credentials: "same-origin",
@@ -4357,9 +6016,40 @@
         setBusy(false, "поиск не удался: " + e);
       });
   }
+  function createProjectFromHit(hit) {
+    setBusy(true, "создаю проект «" + (hit.name || "") + "»…");
+    fetch("/api/maps", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        query: hit.name,
+        hit: hit,
+      }),
+    })
+      .then(function (r) {
+        return r.json();
+      })
+      .then(function (j) {
+        setBusy(false);
+        if (j.error) {
+          setMapStatus(j.error);
+          return;
+        }
+        if (j.map) {
+          lastCatalog.maps = (lastCatalog.maps || []).concat([j.map]);
+          renderMapList();
+          openMap(j.map);
+        }
+      })
+      .catch(function (e) {
+        setBusy(false);
+        setMapStatus("не создался: " + e);
+      });
+  }
   function loadIntoCurrent(hit) {
     if (!currentSlug) {
-      setMapStatus("сначала создай проект — кнопка +");
+      createProjectFromHit(hit);
       return;
     }
     var slug = currentSlug;
@@ -4384,23 +6074,21 @@
       })
       .then(function (j) {
         if (j.map) upsertCatalogMap(j.map);
-        if (op !== mapOp) return;
         if (j.error) {
           suppressSave = false;
           setBusy(false, j.error);
+          renderMapList();
           return;
         }
         setBusy(false);
-        if (j.map && currentSlug === slug) openMap(j.map);
-        else {
-          suppressSave = false;
-          renderMapList();
-        }
+        suppressSave = false;
+        renderMapList();
+        if (op === mapOp && currentSlug === slug && j.map) openMap(j.map);
       })
       .catch(function (e) {
-        if (op !== mapOp) return;
         suppressSave = false;
         setBusy(false, "сборка не удалась: " + e);
+        renderMapList();
       });
   }
   function refreshCatalog() {
@@ -4418,59 +6106,39 @@
       })
       .catch(function () {});
   }
-  function openNewProject(m) {
-    mapOp++;
-    setBusy(false);
-    currentSlug = m.slug;
-    emptyCanvas();
-    setMapChrome(m);
-    showLeft("maps");
-    if (mapQ) {
-      mapQ.value = "";
-      mapQ.focus();
-    }
-    if (mapHits) mapHits.innerHTML = "";
-    setMapStatus("загрузить район или город в этот проект");
+  var npModal = document.getElementById("new-project");
+  var npQ = document.getElementById("np-q");
+  var npName = document.getElementById("np-name");
+  var npHits = document.getElementById("np-hits");
+  var npErr = document.getElementById("np-err");
+  var npCreate = document.getElementById("np-create");
+  var npEmpty = document.getElementById("np-empty");
+  var npSelected = null;
+  function openNewProjectModal() {
+    if (!npModal) return;
+    npSelected = null;
+    if (npErr) npErr.textContent = "";
+    if (npQ) npQ.value = "";
+    if (npName) npName.value = "";
+    if (npHits) npHits.innerHTML = "";
+    if (npCreate) npCreate.disabled = true;
+    npModal.classList.add("show");
+    if (npName) setTimeout(function () {
+      npName.focus();
+    }, 0);
+  }
+  function closeNewProjectModal() {
+    if (npModal) npModal.classList.remove("show");
   }
   var btnNew = document.getElementById("btn-new-map");
   if (btnNew)
     btnNew.onclick = function () {
       showLeft("maps");
       if (!hasApi()) {
-        var n = (lastCatalog.maps || []).length + 1;
-        var m = {
-          slug: "local-" + Date.now(),
-          name: "Проект " + n,
-          kind: "empty",
-          zones: 0,
-        };
-        lastCatalog.maps = (lastCatalog.maps || []).concat([m]);
-        openNewProject(m);
-        setMapStatus("сначала: python scripts/map_server.py");
+        setMapStatus("запусти: python scripts/map_server.py");
         return;
       }
-      fetch("/api/maps", {
-        method: "POST",
-        credentials: "same-origin",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "create" }),
-      })
-        .then(function (r) {
-          return r.json();
-        })
-        .then(function (j) {
-          if (j.error) {
-            setMapStatus(j.error);
-            return;
-          }
-          if (j.map) {
-            lastCatalog.maps = (lastCatalog.maps || []).concat([j.map]);
-            openNewProject(j.map);
-          }
-        })
-        .catch(function (e) {
-          setMapStatus("не создался: " + e);
-        });
+      openNewProjectModal();
     };
   var searchTimer = 0;
   if (mapQ) {
@@ -4495,6 +6163,252 @@
       clearTimeout(searchTimer);
       runSearch(true);
     };
+
+  var npTimer = 0;
+  function npRender(q) {
+    if (!npHits) return;
+    npHits.innerHTML = "";
+    npSelected = null;
+    if (npCreate) npCreate.disabled = true;
+    fetch("/api/search?q=" + encodeURIComponent(q), {
+      credentials: "same-origin",
+    })
+      .then(function (r) {
+        return r.json();
+      })
+      .then(function (j) {
+        if (npHits) npHits.innerHTML = "";
+        if (npErr) npErr.textContent = "";
+        if (!(j.hits || []).length) {
+          if (npErr) npErr.textContent = "ничего не нашли";
+          return;
+        }
+        var best = pickBestHit(q, j.hits);
+        (j.hits || []).forEach(function (h) {
+          var b = document.createElement("button");
+          b.type = "button";
+          b.className = "hit";
+          b.innerHTML =
+            "<b>" +
+            h.name +
+            "</b><small>" +
+            (KIND_RU[h.kind] || h.type || "") +
+            " · " +
+            (h.display || "") +
+            "</small>";
+          b.onclick = function () {
+            npSelected = h;
+            if (npCreate) npCreate.disabled = false;
+            if (npName && !npName.value.trim()) npName.value = h.name;
+            Array.prototype.slice.call(npHits.children).forEach(function (x) {
+              x.classList.remove("on");
+            });
+            b.classList.add("on");
+          };
+          if (h === best) {
+            npSelected = h;
+            if (npCreate) npCreate.disabled = false;
+            if (npName && !npName.value.trim()) npName.value = h.name;
+            b.classList.add("on");
+          }
+          npHits.appendChild(b);
+        });
+      })
+      .catch(function () {
+        if (npErr) npErr.textContent = "поиск не удался";
+      });
+  }
+  if (npQ)
+    npQ.addEventListener("input", function () {
+      clearTimeout(npTimer);
+      var q = npQ.value.trim();
+      if (q.length < 5) {
+        if (npHits) npHits.innerHTML = "";
+        npSelected = null;
+        if (npCreate) npCreate.disabled = true;
+        return;
+      }
+      npTimer = setTimeout(function () {
+        npRender(q);
+      }, 700);
+    });
+  if (npQ)
+    npQ.addEventListener("keydown", function (e) {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        clearTimeout(npTimer);
+        npRender(npQ.value.trim());
+      }
+    });
+  if (npCreate)
+    npCreate.onclick = function () {
+      if (!npSelected) return;
+      closeNewProjectModal();
+      createProjectFromHit(npSelected);
+    };
+  if (npEmpty)
+    npEmpty.onclick = function () {
+      var name = (npName && npName.value.trim()) || "";
+      closeNewProjectModal();
+      if (!hasApi()) {
+        setMapStatus("запусти: python scripts/map_server.py");
+        return;
+      }
+      setBusy(true, "создаю проект…");
+      fetch("/api/maps", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "create", name: name || undefined }),
+      })
+        .then(function (r) {
+          return r.json();
+        })
+        .then(function (j) {
+          setBusy(false);
+          if (j.error) {
+            setMapStatus(j.error);
+            return;
+          }
+          if (j.map) {
+            lastCatalog.maps = (lastCatalog.maps || []).concat([j.map]);
+            renderMapList();
+            openMap(j.map);
+          }
+        })
+        .catch(function (e) {
+          setBusy(false);
+          setMapStatus("не создался: " + e);
+        });
+    };
+  var npClose = document.getElementById("np-close");
+  if (npClose) npClose.onclick = closeNewProjectModal;
+  var npCancel = document.getElementById("np-cancel");
+  if (npCancel) npCancel.onclick = closeNewProjectModal;
+  if (npModal)
+    npModal.addEventListener("mousedown", function (e) {
+      if (e.target === npModal) closeNewProjectModal();
+    });
+
+  var copiesOpen = false;
+  var copiesListEl = document.getElementById("copies-list");
+  var copiesBox = document.getElementById("copies");
+  var copiesToggle = document.getElementById("copies-toggle");
+  var copyNowBtn = document.getElementById("copy-now");
+  if (copiesToggle)
+    copiesToggle.onclick = function () {
+      copiesOpen = !copiesOpen;
+      if (copiesBox) copiesBox.classList.toggle("open", copiesOpen);
+      if (copiesOpen) refreshCopies();
+    };
+  if (copyNowBtn)
+    copyNowBtn.onclick = function () {
+      if (!currentSlug || !hasApi()) {
+        setMapStatus("сначала открой проект");
+        return;
+      }
+      var def = (currentProject() || {}).name || currentSlug;
+      var name = window.prompt("Имя копии", def);
+      if (!name || !String(name).trim()) return;
+      name = String(name).trim();
+      var slug = currentSlug;
+      setBusy(true, "сохраняю копию «" + name + "»…");
+      fetch("/v1/maps/" + encodeURIComponent(name) + "/publish", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ slug: slug, name: name }),
+      })
+        .then(function (r) {
+          return r.json();
+        })
+        .then(function (j) {
+          setBusy(false);
+          if (j.error) {
+            setMapStatus(j.error);
+            return;
+          }
+          copiesOpen = true;
+          if (copiesBox) copiesBox.classList.add("open");
+          refreshCopies();
+          setMapStatus("копия сохранена: " + (j.map || name) + " v" + (j.version || ""));
+        })
+        .catch(function (e) {
+          setBusy(false);
+          setMapStatus("копия не сохранилась: " + e);
+        });
+    };
+  function refreshCopies() {
+    if (!hasApi() || !currentUser) return;
+    fetch("/v1/maps", { credentials: "same-origin" })
+      .then(function (r) {
+        return r.json();
+      })
+      .then(function (j) {
+        if (!copiesListEl) return;
+        copiesListEl.innerHTML = "";
+        var maps = j.maps || [];
+        if (!maps.length) {
+          var p = document.createElement("div");
+          p.id = "copies-empty";
+          p.textContent = "пока нет копий — нажми 💾";
+          copiesListEl.appendChild(p);
+          return;
+        }
+        maps.forEach(function (m) {
+          var row = document.createElement("div");
+          row.className = "cpy";
+          var name = document.createElement("div");
+          name.className = "cname";
+          name.textContent = m.title || m.id;
+          name.title = m.id;
+          var meta = document.createElement("div");
+          meta.className = "cmeta";
+          meta.textContent = "v" + m.version + " · " + m.zones;
+          var link3d = document.createElement("a");
+          link3d.href =
+            "http://localhost:5173/?map=" + encodeURIComponent(m.id);
+          link3d.target = "_blank";
+          link3d.rel = "noopener";
+          link3d.textContent = "3D";
+          link3d.title = "построить 3D от копии";
+          var linkSvg = document.createElement("a");
+          linkSvg.href = "/v1/maps/" + encodeURIComponent(m.id) + ".svg";
+          linkSvg.target = "_blank";
+          linkSvg.rel = "noopener";
+          linkSvg.textContent = "SVG";
+          linkSvg.title = "открыть svg копии";
+          var linkCopy = document.createElement("a");
+          linkCopy.href = "#";
+          linkCopy.textContent = "🔗";
+          linkCopy.title = "скопировать ссылку 3D";
+          linkCopy.onclick = function (e) {
+            e.preventDefault();
+            var url =
+              "http://localhost:5173/?map=" + encodeURIComponent(m.id);
+            try {
+              navigator.clipboard
+                .writeText(url)
+                .then(function () {
+                  setMapStatus("ссылка скопирована: " + url);
+                })
+                .catch(function () {
+                  window.prompt("Ссылка 3D от копии", url);
+                });
+            } catch (err) {
+              window.prompt("Ссылка 3D от копии", url);
+            }
+          };
+          row.appendChild(name);
+          row.appendChild(meta);
+          row.appendChild(link3d);
+          row.appendChild(linkSvg);
+          row.appendChild(linkCopy);
+          copiesListEl.appendChild(row);
+        });
+      })
+      .catch(function () {});
+  }
 
   buildLabels();
   measureGapPx();
@@ -4529,6 +6443,7 @@
     hideAuth();
     lastCatalog = { maps: me.maps || [] };
     renderMapList();
+    refreshCopies();
     var slug = me.last_slug || "";
     var found = null;
     (lastCatalog.maps || []).forEach(function (m) {
@@ -4668,4 +6583,11 @@
   } else {
     showAuth("открой через http://127.0.0.1:8765");
   }
+  var penBar = document.createElement("div");
+  penBar.id = "pen-log-bar";
+  penBar.textContent =
+    "лог штрихов включён · чертите, Ctrl+Z сколько нужно, потом напишите «готово»";
+  penBar.style.cssText =
+    "position:fixed;left:12px;bottom:10px;z-index:80;background:#2b2317;color:#f2e8d5;font:12px/1.35 sans-serif;padding:7px 11px;max-width:72vw;pointer-events:none;";
+  document.body.appendChild(penBar);
 })();
