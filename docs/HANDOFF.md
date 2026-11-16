@@ -7,22 +7,16 @@
 
 ## Где мы
 
-Репозиторий синхронизирован с GitHub на коммит `cbc3516` (21.08.2026, ветка `main`).
-Работа 22–24.08 (инструмент «шов») в репозиторий **не попала** — она существовала только
-локально и уцелела лишь в логах чатов.
+Репозиторий синхронизирован с GitHub. Ветка `recovery/handoff-seam` (коммит `4981080`) содержит
+работу 22–24.08, восстановленную из логов: 26 файлов, включая `map_editor.js` 196 КБ
+(в `main` он 138 КБ — там версия без шва). Ветка запушена, в `main` не смержена.
 
-Восстановленные файлы лежат в `C:\Users\MiBookPro\Workspace\_recovery\nasledniki\` (25 файлов,
-615 КБ) и **ещё не перенесены сюда**. Из них четыре — новее того, что в git:
+Тесты восстановленного `pen_geom.py` проходят: `OK pen_geom excursion + grow + deform`.
+Синтаксис всех файлов проверен (`py_compile`, `node --check`).
 
-| файл | в git | восстановлено |
-|---|---|---|
-| `scripts\map_editor.js` | 138 КБ | 196 КБ (логика шва: `deformPair`, `yellowOnGrowBody`, `walkHasJunction`) |
-| `scripts\check-map.py` | 32 КБ | 40 КБ |
-| `scripts\map_server.py` | 17 КБ | 18 КБ |
-| `docs\MAP-EDITOR.md` | 13 КБ | 21 КБ |
-
-Остальные 21 файл — `docs\PEN-AND-ALIGN-PLAN.md`, `docs\HANDOFF-SEAM.md`, `scripts\pen_geom.py`,
-`scripts\test_pen_geom.py` и `prototype\*` (compressor, seams, corners, стенды, тесты).
+Изменения в ветке: `docs\PEN-AND-ALIGN-PLAN.md`, `docs\HANDOFF-SEAM.md`, `scripts\pen_geom.py`,
+`scripts\test_pen_geom.py`, `prototype\*` (17 файлов), плюс обновлённые `scripts\map_editor.js`,
+`scripts\check-map.py`, `scripts\map_server.py`, `docs\MAP-EDITOR.md`.
 
 ## Что известно точно
 
@@ -41,8 +35,8 @@
 
 ## Следующие шаги
 
-1. Ветка `recovery/handoff-seam` от `main`, перенос 25 файлов из `_recovery\nasledniki\`,
-   коммит с указанием источника (сессия Grok `01a026c3`, 21–24.08).
+1. ~~Перенос в ветку~~ — сделано, `recovery/handoff-seam` запушена. Осталось: ревью диффа
+   четырёх замененных файлов и решение о мерже в `main` (или оставить ветку как эксперимент).
 2. Проверить редактор на восстановленном `map_editor.js`: `python scripts\check-map.py`,
    открыть `prototype\map-bench.html`, Ctrl+F5. Известный FAIL: `Кинель-Черкасский район×2`.
 3. Решить судьбу шва: переводить на midline ±2.5 (модель уже написана) или закрыть тему.
